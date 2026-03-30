@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Drawer,
   List,
@@ -11,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import PeopleIcon from "@mui/icons-material/People";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
@@ -18,6 +18,8 @@ import GroupsIcon from "@mui/icons-material/Groups";
 const DRAWER_WIDTH = 260;
 
 interface SidebarProps {
+  open: boolean;
+  onToggle: () => void;
   currentPage: string;
   onNavigate: (page: string) => void;
 }
@@ -28,16 +30,24 @@ const menuItems = [
   { key: "groups", label: "Grupos Permitidos", icon: <GroupsIcon /> },
 ];
 
-export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
-  const [open, setOpen] = useState(true);
+const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic-bezier(0.4, 0, 0.2, 1)";
 
+export default function Sidebar({ open, onToggle, currentPage, onNavigate }: SidebarProps) {
   return (
     <>
       {/* Botão flutuante para abrir quando fechado */}
       {!open && (
         <IconButton
-          onClick={() => setOpen(true)}
-          sx={{ position: "fixed", top: 16, left: 16, zIndex: 1300 }}
+          onClick={onToggle}
+          sx={{
+            position: "fixed",
+            top: 16,
+            left: 16,
+            zIndex: 1300,
+            bgcolor: "background.paper",
+            boxShadow: 2,
+            "&:hover": { bgcolor: "action.hover" },
+          }}
         >
           <MenuIcon />
         </IconButton>
@@ -50,9 +60,11 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         sx={{
           width: open ? DRAWER_WIDTH : 0,
           flexShrink: 0,
+          transition: TRANSITION,
           "& .MuiDrawer-paper": {
             width: DRAWER_WIDTH,
             boxSizing: "border-box",
+            transition: "transform 300ms cubic-bezier(0.4, 0, 0.2, 1)",
           },
         }}
       >
@@ -67,8 +79,8 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           <Typography variant="h6" noWrap>
             Bot Painel
           </Typography>
-          <IconButton onClick={() => setOpen(false)}>
-            <MenuIcon />
+          <IconButton onClick={onToggle}>
+            <ChevronLeftIcon />
           </IconButton>
         </Box>
 

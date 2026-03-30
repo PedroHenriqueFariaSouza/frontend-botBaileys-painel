@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Box } from "@mui/material";
-import Sidebar, { DRAWER_WIDTH } from "./components/Sidebar";
+import Sidebar from "./components/Sidebar";
 import UsersPage from "./pages/UsersPage";
 import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
 
 function App() {
   const [page, setPage] = useState("users");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   function renderPage() {
     switch (page) {
@@ -21,13 +22,19 @@ function App() {
 
   return (
     <Box sx={{ display: "flex" }}>
-      <Sidebar currentPage={page} onNavigate={setPage} />
+      <Sidebar
+        open={sidebarOpen}
+        onToggle={() => setSidebarOpen((prev) => !prev)}
+        currentPage={page}
+        onNavigate={setPage}
+      />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
           p: 3,
-          ml: `${DRAWER_WIDTH}px`,
+          pt: sidebarOpen ? 3 : 8,
+          transition: "padding-top 300ms cubic-bezier(0.4, 0, 0.2, 1)",
           minHeight: "100vh",
         }}
       >
