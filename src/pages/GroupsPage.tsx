@@ -21,10 +21,12 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  Tooltip,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { supabase } from "../lib/supabase";
 import type { UserAllowedGroup } from "../types/database";
 
@@ -193,7 +195,16 @@ export default function GroupsPage() {
 
       {/* Add dialog */}
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Adicionar Grupo Permitido</DialogTitle>
+        <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          Adicionar Grupo Permitido
+          <Tooltip
+            title="Cada permissão vincula um usuário (LID) a um grupo específico. Isso define em quais grupos aquele usuário pode interagir com o bot. Um mesmo usuário pode ter acesso a vários grupos."
+            arrow
+            placement="right"
+          >
+            <HelpOutlineIcon sx={{ fontSize: 20, color: "text.secondary", cursor: "help" }} />
+          </Tooltip>
+        </DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
           <TextField
             label="LID do Usuário"
