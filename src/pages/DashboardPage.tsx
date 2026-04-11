@@ -67,8 +67,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [users, setUsers] = useState<User[]>([]);
-  const [commands, setCommands] = useState<UserCommand[]>([]);
+  const [, setUsers] = useState<User[]>([]);
+  const [, setCommands] = useState<UserCommand[]>([]);
 
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [topCommands, setTopCommands] = useState<CommandCount[]>([]);
@@ -318,8 +318,8 @@ export default function DashboardPage() {
                   outerRadius={95}
                   paddingAngle={4}
                   dataKey="value"
-                  label={({ name, percent }) =>
-                    `${name} ${(percent * 100).toFixed(0)}%`
+                  label={({ name, percent }: { name?: string; percent?: number }) =>
+                    `${name ?? ""} ${((percent ?? 0) * 100).toFixed(0)}%`
                   }
                   labelLine={false}
                 >
