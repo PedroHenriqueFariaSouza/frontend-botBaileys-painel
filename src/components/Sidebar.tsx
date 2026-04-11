@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
@@ -25,6 +26,7 @@ interface SidebarProps {
 }
 
 const menuItems = [
+  { key: "dashboard", label: "Dashboard", icon: <DashboardIcon /> },
   { key: "users", label: "Usuários", icon: <PeopleIcon /> },
   { key: "commands", label: "Comandos", icon: <TerminalIcon /> },
   { key: "groups", label: "Grupos Permitidos", icon: <GroupsIcon /> },

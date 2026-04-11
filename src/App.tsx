@@ -1,16 +1,19 @@
 import { useState } from "react";
 import { Box } from "@mui/material";
 import Sidebar from "./components/Sidebar";
+import DashboardPage from "./pages/DashboardPage";
 import UsersPage from "./pages/UsersPage";
 import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
 
 function App() {
-  const [page, setPage] = useState("users");
+  const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   function renderPage() {
     switch (page) {
+      case "dashboard":
+        return <DashboardPage />;
       case "commands":
         return <CommandsPage />;
       case "groups":
