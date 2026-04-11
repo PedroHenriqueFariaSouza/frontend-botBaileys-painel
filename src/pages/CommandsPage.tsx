@@ -25,10 +25,11 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "../lib/supabase";
-import type { UserCommand } from "../types/database";
+import type { UserCommand, User } from "../types/database";
 
 export default function CommandsPage() {
   const [commands, setCommands] = useState<UserCommand[]>([]);
+  const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -41,17 +42,31 @@ export default function CommandsPage() {
 
   async function fetchCommands() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("user_commands")
-      .select("*")
-      .order("used_at", { ascending: false })
-      .limit(500);
+    const [cmdsRes, usersRes] = await Promise.all([
+      supabase
+        .from("user_commands")
+        .select("*")
+        .order("used_at", { ascending: false })
+        .limit(500),
+      supabase
+        .from("users")
+        .select("lid, push_name"),
+    ]);
 
-    if (error) {
-      setError(error.message);
+    if (cmdsRes.error) {
+      setError(cmdsRes.error.message);
     } else {
-      setCommands(data ?? []);
+      setCommands(cmdsRes.data ?? []);
     }
+
+    if (!usersRes.error && usersRes.data) {
+      const map = new Map<string, string>();
+      (usersRes.data as Pick<User, "lid" | "push_name">[]).forEach((u) => {
+        if (u.push_name) map.set(u.lid, u.push_name);
+      });
+      setUserMap(map);
+    }
+
     setLoading(false);
   }
 
@@ -75,7 +90,8 @@ export default function CommandsPage() {
   const filtered = commands.filter(
     (c) =>
       c.lid.includes(search) ||
-      c.command.toLowerCase().includes(search.toLowerCase())
+      c.command.toLowerCase().includes(search.toLowerCase()) ||
+      (userMap.get(c.lid) ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
   if (loading) {
@@ -98,7 +114,7 @@ export default function CommandsPage() {
 
       <TextField
         size="small"
-        placeholder="Buscar por LID ou comando..."
+        placeholder="Buscar por LID, nome ou comando..."
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         sx={{ mb: 2, width: 360 }}
@@ -120,6 +136,7 @@ export default function CommandsPage() {
               <TableCell>Ações</TableCell>
               <TableCell>ID</TableCell>
               <TableCell>LID</TableCell>
+              <TableCell>Usuário</TableCell>
               <TableCell>Comando</TableCell>
               <TableCell>Executado em</TableCell>
             </TableRow>
@@ -137,6 +154,9 @@ export default function CommandsPage() {
                   {cmd.lid}
                 </TableCell>
                 <TableCell>
+                  {userMap.get(cmd.lid) ?? <Typography variant="body2" color="text.disabled" component="span">—</Typography>}
+                </TableCell>
+                <TableCell>
                   <code>{cmd.command}</code>
                 </TableCell>
                 <TableCell>
@@ -146,7 +166,7 @@ export default function CommandsPage() {
             ))}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
                   Nenhum comando encontrado.
                 </TableCell>
               </TableRow>
