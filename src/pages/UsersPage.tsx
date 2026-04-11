@@ -258,7 +258,11 @@ export default function UsersPage() {
                     : "—"}
                 </TableCell>
                 <TableCell align="right">{user.command_count}</TableCell>
-                <TableCell align="right">{user.daily_command_count}</TableCell>
+                <TableCell align="right">
+                  {user.daily_count_date === new Date().toISOString().slice(0, 10)
+                    ? user.daily_command_count
+                    : 0}
+                </TableCell>
                 <TableCell>
                   {user.last_command_at
                     ? new Date(user.last_command_at).toLocaleString("pt-BR")
