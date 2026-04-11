@@ -9,8 +9,8 @@ import {
   Divider,
   Typography,
 } from "@mui/material";
-import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import TerminalIcon from "@mui/icons-material/Terminal";
@@ -37,22 +37,35 @@ const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic
 export default function Sidebar({ open, onToggle, currentPage, onNavigate }: SidebarProps) {
   return (
     <>
-      {/* Botão flutuante para abrir quando fechado */}
+      {/* Aba na borda esquerda para abrir o menu */}
       {!open && (
-        <IconButton
+        <Box
           onClick={onToggle}
           sx={{
             position: "fixed",
-            top: 16,
-            left: 16,
+            left: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
             zIndex: 1300,
-            bgcolor: "background.paper",
-            boxShadow: 2,
-            "&:hover": { bgcolor: "action.hover" },
+            width: 20,
+            height: 56,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            bgcolor: "primary.main",
+            color: "primary.contrastText",
+            borderRadius: "0 8px 8px 0",
+            cursor: "pointer",
+            boxShadow: 3,
+            transition: "width 200ms ease, opacity 200ms ease",
+            "&:hover": {
+              width: 28,
+              opacity: 0.9,
+            },
           }}
         >
-          <MenuIcon />
-        </IconButton>
+          <ChevronRightIcon fontSize="small" />
+        </Box>
       )}
 
       <Drawer

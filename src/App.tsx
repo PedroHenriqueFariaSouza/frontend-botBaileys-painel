@@ -36,8 +36,7 @@ function App() {
         sx={{
           flexGrow: 1,
           p: 3,
-          pt: sidebarOpen ? 3 : 8,
-          transition: "padding-top 300ms cubic-bezier(0.4, 0, 0.2, 1)",
+          transition: "padding 300ms cubic-bezier(0.4, 0, 0.2, 1)",
           minHeight: "100vh",
         }}
       >
