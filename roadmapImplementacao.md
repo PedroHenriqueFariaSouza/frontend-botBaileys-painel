@@ -1,0 +1,476 @@
+# Roadmap de Implementação — Autenticação Persistente via Banco de Dados
+
+> **Referência:** Este documento detalha o que deve ser criado em cada fase, separando explicitamente as responsabilidades do **núcleo do bot** e do **frontend web**.
+> Toda a arquitetura, modelagem e decisões estão documentadas em [`autenticacaoBancoDeDados.md`](./autenticacaoBancoDeDados.md).
+
+---
+
+## Índice
+
+- [Fase 1 — Fundação (MVP)](#fase-1--fundação-mvp)
+- [Fase 2 — Servidor de Pareamento](#fase-2--servidor-de-pareamento)
+- [[outro repositorio front end manipular] Fase 3 — Frontend Web](#outro-repositorio-front-end-manipular-fase-3--frontend-web)
+- [Fase 4 — Hardening](#fase-4--hardening)
+- [Fase 5 — Multi-Bot / Multi-Tenant](#fase-5--multi-bot--multi-tenant)
+
+---
+
+## Fase 1 — Fundação (MVP)
+
+> **Objetivo:** Fazer o bot parar de usar a pasta `auth/` e passar a ler/escrever todas as credenciais e chaves de sessão diretamente no Supabase. A modelagem base multi-bot no banco já foi concluída; a partir deste ponto, o foco da fase é implementar essa realidade no **núcleo do bot**. Não envolve interface visual — é 100% infraestrutura e código do bot.
+
+### [outro repositorio front end manipular] Frontend Web
+
+Nada a ser feito nesta fase. O frontend ainda não existe.
+
+---
+
+### Núcleo do Bot
+
+#### 1.1 — Criar a modelagem base multi-bot no Supabase ✅ Concluído
+
+Esta etapa já foi concluída.
+
+Antes da `auth_store`, a estrutura do banco precisou prever a tabela raiz `bots`, porque o sistema já está sendo desenhado para múltiplos bots/instâncias usando a mesma base de código.
+
+Resultado esperado desta etapa:
+
+- tabela `bots` como entidade central das instâncias
+- tabela `auth_store` ligada a `bots(id)`
+- tabelas operacionais (`users`, `user_commands`, `user_allowed_groups`) também escopadas por `bot_id`
+
+O SQL e a estratégia de migração para banco novo ou banco já existente estão documentados em [`modelagemBancoBotWhatsapp.md`](./modelagemBancoBotWhatsapp.md).
+
+O que fica pendente na Fase 1, a partir daqui, é a implementação do código do bot para consumir essa modelagem.
+
+Exemplo da estrutura criada no Supabase:
+
+```sql
+CREATE TABLE auth_store (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  bot_id      TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  key_type    TEXT NOT NULL,
+  key_id      TEXT NOT NULL,
+  data        JSONB NOT NULL,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+
+  CONSTRAINT uq_auth_store_key UNIQUE (bot_id, key_type, key_id)
+);
+
+CREATE INDEX idx_auth_store_bot ON auth_store (bot_id, key_type);
+
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_auth_store_updated
+  BEFORE UPDATE ON auth_store
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+```
+
+Configure também o RLS para que apenas o `service_role` do Supabase tenha acesso:
+
+```sql
+ALTER TABLE auth_store ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Service role full access"
+  ON auth_store FOR ALL
+  USING (true)
+  WITH CHECK (true);
+
+CREATE POLICY "No anon access"
+  ON auth_store FOR ALL TO anon
+  USING (false);
+```
+
+**Por que:** A chave `anon` (usada em frontends públicos) nunca deve conseguir ler as credenciais do Signal Protocol. Apenas o backend com a `service_role` key acessa essa tabela.
+
+---
+
+#### 1.2 — Implementar `useSupabaseAuthState` em `src/database/authStore.ts`
+
+Crie o arquivo `src/database/authStore.ts`. Esta função substitui `useMultiFileAuthState("auth")` mantendo exatamente a mesma interface `{ state, saveCreds }` que o Baileys espera.
+
+O que esta função deve fazer:
+
+- **`readCreds()`** — Busca no banco (`key_type = 'creds'`, `key_id = 'main'`). Se não existir, chama `initAuthCreds()` do Baileys para gerar credenciais novas.
+- **`saveCreds()`** — Serializa as credenciais com `BufferJSON.replacer` e faz upsert na tabela (`onConflict: 'bot_id,key_type,key_id'`).
+- **`keys.get(type, ids)`** — Busca múltiplas chaves do Signal (pre-keys, sessions, sender-keys) em uma única query usando `IN (ids)`. Deserializa com `BufferJSON.reviver`.
+- **`keys.set(data)`** — Para cada chave com valor não-nulo, faz upsert no banco. Para chaves com valor `null`, deleta o registro correspondente (o Baileys sinaliza deleção passando `null`).
+
+O `bot_id` deve vir da variável de ambiente `BOT_ID`. Durante bootstrap, pode usar `default`, mas a modelagem já assume que existirão múltiplos bots reais na solução.
+
+Estrutura de tipos de chave e como eles mapeiam para a tabela:
+
+| Arquivo original | `key_type` | `key_id` |
+|---|---|---|
+| `creds.json` | `creds` | `main` |
+| `pre-key-1.json` | `pre-key` | `1` |
+| `session-556484051412.0.json` | `session` | `556484051412.0` |
+| `sender-key-status@broadcast--xxx.json` | `sender-key` | `status@broadcast--xxx` |
+| `app-state-sync-key-AAA.json` | `app-state-sync-key` | `AAA` |
+| `app-state-sync-version-regular.json` | `app-state-sync-version` | `regular` |
+
+---
+
+#### 1.3 — Adicionar cache em memória com `NodeCache`
+
+O Signal Protocol faz **dezenas de leituras/escritas de chaves por mensagem** (encrypt/decrypt). Sem cache, cada operação seria uma query HTTP ao Supabase — inviável em produção.
+
+O projeto já usa `NodeCache` para `msgRetryCounterCache`, então a dependência já está disponível.
+
+Dentro do `keys.get` e `keys.set` da `useSupabaseAuthState`:
+
+- **No `get`:** Montar uma `cacheKey` como `"${type}:${id}"`. Se existir no cache, retornar sem ir ao banco. Se não existir, buscar no banco, salvar no cache e retornar.
+- **No `set`:** Salvar imediatamente no cache (síncrono) e disparar o upsert ao Supabase em background (async/fire-and-forget ou com batching).
+
+TTL sugerido: 5 minutos (`stdTTL: 300`). Ajustar conforme a necessidade.
+
+O cache transforma dezenas de queries por mensagem em zero queries na maioria dos casos.
+
+---
+
+#### 1.4 — Criar script de migração `auth/` → banco de dados
+
+Crie um script separado (ex: `src/scripts/migrateAuthToDb.ts`) que:
+
+1. Lê todos os arquivos da pasta `auth/` usando `fs`.
+2. Para cada arquivo, infere o `key_type` e `key_id` a partir do nome do arquivo.
+3. Faz o parse do JSON e upsert na tabela `auth_store`.
+4. Ao final, imprime quantos registros foram migrados.
+
+**Importante:** Não deletar a pasta `auth/` durante a migração. Mantê-la como backup até o bot ser validado com o banco.
+
+Regras de inferência do nome do arquivo para `key_type`/`key_id`:
+
+- `creds.json` → `key_type: 'creds'`, `key_id: 'main'`
+- `pre-key-27.json` → `key_type: 'pre-key'`, `key_id: '27'`
+- `session-556484051412.0.json` → `key_type: 'session'`, `key_id: '556484051412.0'`
+- `sender-key-<resto>.json` → `key_type: 'sender-key'`, `key_id: '<resto>'`
+- `app-state-sync-key-<resto>.json` → `key_type: 'app-state-sync-key'`, `key_id: '<resto>'`
+- `app-state-sync-version-<resto>.json` → `key_type: 'app-state-sync-version'`, `key_id: '<resto>'`
+
+---
+
+#### 1.5 — Substituir `useMultiFileAuthState` no `src/index.ts`
+
+Esta é a alteração mais simples e ao mesmo tempo a mais importante. É uma única linha que muda:
+
+```diff
+- const { state, saveCreds } = await useMultiFileAuthState("auth");
++ const { state, saveCreds } = await useSupabaseAuthState();
+```
+
+O restante do código de inicialização do bot não precisa mudar — `state` e `saveCreds` têm exatamente a mesma interface.
+
+---
+
+#### 1.6 — Adaptar `clearCorruptedAuthFiles` para operar no banco
+
+A função atual que limpa a pasta `auth/` em caso de corrupção precisa de uma equivalente para o banco. Crie (ou adapte) uma função `clearCorruptedAuthKeys`:
+
+Ela deve deletar todos os registros da tabela `auth_store` cujo `key_type` seja diferente de `'creds'` (ou seja: pre-keys, sessions, sender-keys, app-state-sync-key, app-state-sync-version) para o `bot_id` correspondente. As credenciais principais (`creds`) não devem ser deletadas nessa limpeza.
+
+Usar `delete({ count: 'exact' })` para logar quantos registros foram removidos.
+
+---
+
+#### 1.7 — Validar conexão, reconexão e troca de mensagens ⚠️ Validado parcialmente
+
+Status atual da validação desta etapa:
+
+- ✅ Migração executada com sucesso (`auth/` → `auth_store`), com 41 registros enviados para `BOT_ID=default`
+- ✅ Leitura do estado de autenticação pelo bot via `useSupabaseAuthState`
+- ✅ Handshake inicial com o endpoint do WhatsApp iniciado com sucesso
+- ❌ Sessão rejeitada pelo WhatsApp com `401 Unauthorized` (logout), impedindo validar troca de mensagens e reconexão estável sem novo pareamento
+
+Bloqueio identificado:
+
+- A sessão migrada existente está inválida/expirada no WhatsApp
+
+Próxima ação para concluir a 1.7:
+
+1. Realizar novo pareamento (gerar sessão nova válida).
+2. Subir o bot novamente e confirmar `connection: open`.
+3. Validar envio/recebimento de mensagem real.
+4. Reiniciar processo e confirmar reconexão sem QR.
+
+Após as etapas acima:
+
+1. Rodar o script de migração (1.4).
+2. Subir o bot com `useSupabaseAuthState`.
+3. Verificar no Supabase que as credenciais foram lidas/escritas corretamente.
+4. Enviar e receber mensagens para confirmar que o Signal Protocol está operando.
+5. Reiniciar o bot e verificar que ele se reconecta sem pedir novo QR Code.
+
+---
+
+## Fase 2 — Servidor de Pareamento
+
+> **Objetivo:** Embutir no bot um servidor HTTP/WebSocket que gere o QR Code de pareamento e o envie em tempo real para quem estiver conectado. Esta fase não envolve ainda uma interface bonita — apenas o endpoint funcional.
+
+### [outro repositorio front end manipular] Frontend Web
+
+Nada a ser feito nesta fase ainda. O endpoint ficará disponível, mas o frontend que o consome vem na Fase 3.
+
+---
+
+### Núcleo do Bot
+
+#### 2.1 — Subir servidor HTTP/WebSocket junto com o bot
+
+Adicionar ao processo do bot (recomendado: usar Express + `ws`) um servidor HTTP que:
+
+- Escuta em uma porta definida via variável de ambiente (ex: `PAIR_PORT=3000`).
+- Tem um middleware de autenticação simples em todas as rotas `/pair/*` que valida um token via `req.query.token` ou `Authorization` header, comparando com `process.env.PAIR_TOKEN`.
+- Retorna `401` se o token for inválido.
+
+O servidor HTTP sobe junto com o socket do Baileys, no mesmo processo. Não é um serviço separado.
+
+Exemplo de estrutura de rotas:
+
+```
+GET  /pair        → Serve a página HTML de pareamento (Fase 3)
+WS   /pair/ws     → WebSocket que transmite QR Code e status em tempo real
+```
+
+---
+
+#### 2.2 — Implementar lógica do socket Baileys temporário
+
+Quando um cliente abre o WebSocket em `/pair/ws`:
+
+1. Criar uma instância **temporária** do socket Baileys com `printQRInTerminal: false`.
+2. Escutar o evento `connection.update`.
+3. Quando `qr` estiver presente no update, converter para base64 (usando a lib `qrcode`) e enviar ao cliente WebSocket como JSON: `{ type: 'qr', payload: '<base64>' }`.
+4. Quando `connection === 'open'`, salvar as credenciais no Supabase, encerrar o socket temporário e enviar ao cliente: `{ type: 'success' }`.
+5. Quando `connection === 'close'`, enviar ao cliente: `{ type: 'error', message: '...' }`.
+
+**Importante:** O QR Code expira a cada ~20 segundos. O Baileys emite múltiplos QRs até o scan acontecer. O WebSocket deve repassar cada novo QR ao cliente em tempo real.
+
+**Importante:** O socket temporário de pareamento e o socket principal do bot **nunca devem operar ao mesmo tempo**. O WhatsApp retorna erro 440 (session replaced) se duas instâncias tentarem usar a mesma sessão. A lógica deve garantir que o socket de pareamento só sobe quando o bot principal está desconectado, ou que o bot principal seja pausado durante o pareamento.
+
+---
+
+#### 2.3 — Implementar fluxo de status (`pairing` → `ready` → `active`)
+
+Para evitar race conditions entre o servidor de pareamento e o bot que lê as credenciais, adicionar um campo `status` à tabela `auth_store` ou em uma tabela separada `bot_status`:
+
+| Status | Significado |
+|---|---|
+| `pairing` | Frontend abriu WebSocket, pareamento em andamento |
+| `ready` | Scan concluído, credenciais salvas, frontend encerrou socket temporário |
+| `active` | Bot leu as credenciais e está operando normalmente |
+
+O bot só deve tentar ler credenciais do banco quando `status = 'ready'` ou `status = 'active'`.
+O frontend de pareamento deve atualizar o status para `pairing` ao iniciar e para `ready` ao concluir.
+
+---
+
+#### 2.4 — Testar ciclo completo via curl/wscat ⏳ Pendente
+
+Status atual:
+
+- Esta etapa ficará pendente temporariamente.
+- A execução dos testes end-to-end (curl/wscat + scan real + validação de assunção da sessão pelo bot principal) será feita no fechamento das implementações das fases em andamento.
+
+Antes de construir o frontend, validar o endpoint diretamente:
+
+1. Conectar no WebSocket `/pair/ws?token=<PAIR_TOKEN>` com `wscat` ou similar.
+2. Verificar que o QR chega como mensagem JSON com `type: 'qr'`.
+3. Escanear o QR com o aplicativo WhatsApp.
+4. Verificar que a mensagem `{ type: 'success' }` chega.
+5. Verificar que as credenciais foram salvas no Supabase.
+6. Subir o bot e verificar que ele assume a sessão.
+
+---
+
+## [outro repositorio front end manipular] Fase 3 — Frontend Web
+
+> **Objetivo:** Nesta fase, o frontend será implementado no outro repositório já existente. Neste repositório atual, o foco fica apenas nos ajustes do núcleo do bot para servir e sustentar a interface.
+
+### Núcleo do Bot
+
+Nesta fase, neste repositório, implementar apenas o necessário no núcleo do bot para suportar o frontend externo.
+
+Ajuste principal: garantir que `GET /pair` serve corretamente o arquivo HTML/interface consumida a partir do outro repositório de frontend.
+
+---
+
+### [outro repositorio front end manipular] Frontend Web
+
+> O frontend de pareamento é uma página simples — não precisa de framework pesado. Pode ser um HTML + JS vanilla, React, Vue, ou qualquer outra tecnologia. O que importa é o comportamento.
+
+#### 3.1 — Desenvolver a interface de pareamento
+
+A página deve:
+
+1. Ao abrir, conectar via WebSocket no endpoint `/pair/ws?token=<token>`.
+2. Renderizar o QR Code assim que a mensagem `{ type: 'qr', payload: '<base64>' }` chegar (usar a lib `qrcode` ou `qrcode.react` para renderizar o base64 como imagem).
+3. Exibir um indicador de carregamento enquanto aguarda o QR.
+4. Quando receber `{ type: 'success' }`, exibir mensagem de sucesso: "Bot pareado com sucesso! Aguarde a inicialização."
+5. Quando receber `{ type: 'error' }`, exibir mensagem de erro com a causa e botão para tentar novamente.
+
+---
+
+#### 3.2 — Adicionar autenticação no frontend
+
+O token de acesso ao endpoint de pareamento **não deve ficar exposto no HTML público**. Estratégias:
+
+- **Opção simples:** O admin digita o token em um campo de texto antes de conectar. O token é enviado como query param ou header no WebSocket.
+- **Opção mais segura:** Criar uma rota de login (`POST /pair/login`) que valida usuário/senha do `.env` e retorna um JWT de curta duração. O WebSocket usa o JWT.
+
+Em qualquer caso, a página de pareamento nunca deve ser acessível sem autenticação.
+
+---
+
+#### 3.3 — Implementar reconexão automática do WebSocket
+
+O QR Code expira a cada ~20 segundos. Se o WebSocket cair (timeout, erro de rede), a página deve reconectar automaticamente e solicitar um novo QR. Implementar:
+
+- Detectar evento `onclose` e `onerror` do WebSocket.
+- Aguardar 2-3 segundos e tentar reconectar.
+- Limpar o QR exibido durante a reconexão e exibir "Reconectando...".
+- Limitar o número de tentativas (ex: 5) antes de exibir erro permanente.
+
+---
+
+#### 3.4 — Testar em dispositivos mobile e desktop
+
+Pontos específicos a validar:
+
+- O QR renderiza em tamanho adequado para ser escaneado pelo WhatsApp (mínimo ~200x200px, recomendado ~300x300px).
+- Em mobile, a câmera do WhatsApp consegue focar e ler o QR na tela do computador.
+- O feedback de sucesso aparece em ambos os dispositivos.
+- O token de autenticação não vaza em logs do console nem no HTML do DOM.
+
+---
+
+## Fase 4 — Hardening
+
+> **Objetivo:** Tornar o sistema robusto para uso em produção. Cobre segurança, resiliência e operabilidade.
+
+### [outro repositorio front end manipular] Frontend Web
+
+#### 4.1 — Não exibir dados sensíveis no DOM
+
+Garantir que o token de autenticação e qualquer dado intermediário do pareamento não sejam expostos em atributos HTML ou logs do console.
+
+#### 4.2 — Comunicação via WSS (WebSocket Secure)
+
+Em produção, o WebSocket deve usar `wss://` (WebSocket sobre TLS). Configurar o servidor de forma que, quando a variável `NODE_ENV=production`, o servidor esteja atrás de um proxy (nginx, Caddy, etc.) que termina o TLS. O frontend deve se conectar via `wss://`.
+
+---
+
+### Núcleo do Bot
+
+#### 4.3 — Criptografia do campo `data` no nível da aplicação (opcional)
+
+O `creds.json` contém chaves privadas do Signal Protocol. Quem possui essas chaves pode se passar pelo número vinculado.
+
+Embora o Supabase já criptografe dados em repouso, é possível adicionar uma camada extra: criptografar o campo `data` com AES-256 antes de salvar, usando uma chave que só o backend possui (variável de ambiente `AUTH_ENCRYPTION_KEY`). Descriptografar ao ler.
+
+Isso garante que mesmo um acesso não autorizado ao banco não expõe as credenciais em texto claro.
+
+---
+
+#### 4.4 — Monitoramento de saúde da sessão
+
+Implementar um mecanismo que detecte quando o bot se desconecta do WhatsApp (evento `connection: 'close'` com `loggedOut: true` ou por erro) e:
+
+- Loga o evento com nível `error`.
+- Opcionalmente, envia uma notificação (email, webhook, mensagem no próprio WhatsApp via número de alerta) para o administrador.
+- Atualiza o `status` no banco para `disconnected`.
+
+Isso permite que o admin saiba que precisa re-parear sem precisar monitorar o terminal.
+
+---
+
+#### 4.5 — Fallback local em disco para indisponibilidade do banco
+
+Se o Supabase ficar indisponível:
+
+- O cache em memória (`NodeCache`) permite que o bot continue operando por um tempo (as chaves já estão em RAM).
+- Para writes, enfileirar as operações pendentes e persistir quando o banco voltar (retry com backoff exponencial).
+- Opcionalmente, manter um fallback em disco (arquivo JSON local) como cache de emergência para leituras críticas.
+
+---
+
+#### 4.6 — Documentação de operações
+
+Criar um `RUNBOOK.md` (ou seção no README) cobrindo:
+
+- Como re-parear o bot (sessão expirou, WhatsApp forçou logout, celular trocou).
+- Como debugar problemas de conexão (verificar status no banco, logs do bot).
+- Como restaurar um backup das credenciais do banco.
+- O que fazer se o bot entrar em loop de reconexão.
+
+---
+
+## Fase 5 — Multi-Bot / Multi-Tenant
+
+> **Objetivo:** Consolidar a camada multi-bot já prevista desde a modelagem inicial, permitindo que múltiplos bots (diferentes números de WhatsApp) coexistam no mesmo sistema, cada um com suas credenciais, usuários, grupos e logs isolados.
+
+### [outro repositorio front end manipular] Frontend Web
+
+#### 5.1 — Painel admin para gerenciar múltiplos bots
+
+Interface que lista todos os bots cadastrados com seu `bot_id`, status atual e data da última atualização das credenciais. Permite:
+
+- Iniciar o fluxo de pareamento para um bot específico.
+- Ver o status de conexão de cada bot em tempo real.
+- Desconectar/remover um bot.
+
+O painel deve usar autenticação robusta (não apenas um token simples) — OAuth, magic link, ou sistema de usuários completo.
+
+---
+
+#### 5.2 — Isolamento visual por `bot_id`
+
+O fluxo de pareamento (QR Code) deve ser parametrizado por `bot_id`. A URL pode ser `/pair/:botId` ou o `bot_id` pode ser selecionado no painel antes de abrir o WebSocket.
+
+O WebSocket e o servidor de pareamento devem garantir que as credenciais geradas para `bot_id: 'clienteA'` nunca sejam escritas no registro de `bot_id: 'clienteB'`.
+
+---
+
+### Núcleo do Bot
+
+#### 5.3 — Isolamento completo por `bot_id` em toda a base
+
+Todas as queries do sistema devem usar `bot_id` como filtro. Isso inclui `auth_store`, `users`, `user_commands` e `user_allowed_groups`. Garantir que:
+
+- O `BOT_ID` de cada instância do bot seja único e imutável.
+- A tabela `bots` seja a fonte oficial das instâncias válidas.
+- A constraint `UNIQUE (bot_id, key_type, key_id)` esteja ativa na `auth_store`.
+- A unicidade `UNIQUE (bot_id, lid)` esteja ativa na `users`.
+- O `clearCorruptedAuthKeys` respeite o `bot_id` — nunca limpar chaves de outros bots.
+- Logs e grupos nunca vazem entre bots.
+
+---
+
+#### 5.4 — Provisionamento automático de novos bots via API
+
+Criar um endpoint autenticado (ex: `POST /bots`) que:
+
+1. Recebe um `bot_id` e dados de configuração.
+2. Cria um registro inicial no banco.
+3. Retorna a URL do fluxo de pareamento para aquele `bot_id`.
+
+O admin do painel pode chamar esse endpoint para adicionar um novo bot sem precisar alterar código ou configuração do servidor.
+
+---
+
+## Resumo por Fase
+
+| Fase | Frontend | Núcleo do Bot |
+|---|---|---|
+| **1 — Fundação** | Nada | Tabela `auth_store`, `useSupabaseAuthState`, cache, migração, troca do `useMultiFileAuthState`, adaptação do `clearCorruptedAuth` |
+| **2 — Servidor de Pareamento** | Nada | Servidor HTTP/WS embutido, socket Baileys temporário, fluxo de status |
+| **3 — Frontend Web** | Interface de QR Code, autenticação, reconexão automática | Servir o HTML estático da interface |
+| **4 — Hardening** | WSS em produção, sem dados sensíveis no DOM | Criptografia opcional, monitoramento de saúde, fallback local, runbook |
+| **5 — Multi-Bot / Multi-Tenant** | Painel admin, isolamento por `bot_id`, provisionamento via UI | Garantir isolamento por `bot_id` em toda a base, tabela `bots`, endpoint de provisionamento |

@@ -2,246 +2,679 @@
 
 ## 🎯 Sobre
 
-Este documento descreve a estrutura do banco de dados do bot, **já implementada e integrada** ao projeto via Supabase.
+Este documento descreve a estrutura do banco de dados do bot no Supabase, já considerando a direção arquitetural definida para o projeto:
+
+- múltiplos bots funcionando na mesma solução
+- autenticação persistente do WhatsApp no banco
+- painel/web para pareamento e administração
+- isolamento lógico por instância de bot
 
 O banco é responsável por:
 
-- Controle de usuários (whitelist via banco)
-- Controle de permissões (admin/ban/mute)
-- Controle de uso (logs e estatísticas)
-- Restrição de uso por grupos
+- controle de bots/instâncias
+- armazenamento da sessão do WhatsApp (Baileys)
+- controle de usuários por bot
+- controle de permissões (admin/ban/mute)
+- controle de uso (logs e estatísticas)
+- restrição de uso por grupos
 
-A modelagem foi pensada para ser **simples, escalável e sem overengineering**.
+A modelagem foi pensada para ser simples, escalável e preparada para multi-bot sem refatoração estrutural depois.
 
 ---
 
 ## 🔗 Integração com o Projeto
 
-O banco de dados está hospedado no **Supabase** e é acessado via `@supabase/supabase-js`.
+O banco de dados está hospedado no Supabase e é acessado via `@supabase/supabase-js`.
 
 As credenciais ficam no `.env`:
+
 ```env
 SUPABASE_URL=https://seu-projeto.supabase.co
 SUPABASE_KEY=sua_service_role_key
+BOT_ID=default
+PAIR_TOKEN=defina_um_token_forte
 ```
 
 O módulo de acesso ao banco fica em:
-```
+
+```text
 src/database/
 ├── supabase.ts    # Client Supabase (inicialização)
 ├── users.ts       # CRUD e verificações da tabela users
 ├── groups.ts      # Verificação de grupos autorizados
 ├── commands.ts    # Log de comandos executados
+├── authStore.ts   # Persistência de auth do Baileys
 └── index.ts       # Barrel export
 ```
 
 ---
 
+## 🧭 Decisão Arquitetural
+
+O projeto não está sendo modelado apenas para um bot único.
+
+O objetivo é permitir que múltiplos bots coexistam na mesma base de código e no mesmo banco, cada um com:
+
+- seu próprio número/instância WhatsApp
+- seu próprio estado de autenticação
+- sua própria whitelist
+- seus próprios grupos permitidos
+- seus próprios logs e estatísticas
+
+Por isso, a tabela `bots` passa a ser a entidade raiz da modelagem.
+
+---
+
+## SQL completo de criação do banco
+
+Use o script abaixo no Supabase para criar a modelagem completa já alinhada com essa realidade multi-bot.
+
+> **Importante:** Este script assume **banco novo** ou tabelas ainda não existentes nesse formato. Se o projeto já tiver tabelas antigas como `users`, `user_commands` e `user_allowed_groups`, o `CREATE TABLE IF NOT EXISTS` **não altera** a estrutura antiga. Nesse caso, é necessário rodar uma **migração** antes, senão comandos como `CREATE INDEX ... ON users(bot_id, lid)` falham com erro `column "bot_id" does not exist`.
+
+```sql
+-- 1. Tabela raiz de bots / instancias
+CREATE TABLE IF NOT EXISTS bots (
+  id TEXT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'inactive',
+  phone_jid VARCHAR(50),
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 2. Tabela de usuarios por bot
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  lid VARCHAR(50) NOT NULL,
+  phone_jid VARCHAR(50),
+  push_name VARCHAR(100),
+  is_admin BOOLEAN DEFAULT FALSE,
+  is_banned BOOLEAN DEFAULT FALSE,
+  banned_at TIMESTAMP WITH TIME ZONE,
+  ban_reason VARCHAR(255),
+  muted_until TIMESTAMP WITH TIME ZONE,
+  cooldown_until TIMESTAMP WITH TIME ZONE,
+  command_count INTEGER DEFAULT 0,
+  daily_command_count INTEGER DEFAULT 0,
+  daily_count_date DATE DEFAULT CURRENT_DATE,
+  last_command_at TIMESTAMP WITH TIME ZONE,
+  first_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_users_bot_lid UNIQUE (bot_id, lid)
+);
+
+-- 3. Tabela de logs de comandos por bot
+CREATE TABLE IF NOT EXISTS user_commands (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  command VARCHAR(50) NOT NULL,
+  used_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. Tabela de grupos permitidos por bot e usuario
+CREATE TABLE IF NOT EXISTS user_allowed_groups (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_user_allowed_groups UNIQUE (bot_id, user_id, group_id)
+);
+
+-- 5. Tabela de autenticacao persistente do Baileys
+CREATE TABLE IF NOT EXISTS auth_store (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  key_type TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  data JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_auth_store_key UNIQUE (bot_id, key_type, key_id)
+);
+
+-- 6. Indices para performance
+CREATE INDEX IF NOT EXISTS idx_users_bot_lid ON users(bot_id, lid);
+CREATE INDEX IF NOT EXISTS idx_user_commands_bot_user ON user_commands(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_user ON user_allowed_groups(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_group ON user_allowed_groups(bot_id, group_id);
+CREATE INDEX IF NOT EXISTS idx_auth_store_bot ON auth_store(bot_id, key_type);
+CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
+
+-- 7. Trigger generica para updated_at
+CREATE OR REPLACE FUNCTION update_modified_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_bots_modtime ON bots;
+CREATE TRIGGER update_bots_modtime
+  BEFORE UPDATE ON bots
+  FOR EACH ROW
+  EXECUTE FUNCTION update_modified_column();
+
+DROP TRIGGER IF EXISTS update_users_modtime ON users;
+CREATE TRIGGER update_users_modtime
+  BEFORE UPDATE ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION update_modified_column();
+
+DROP TRIGGER IF EXISTS update_auth_store_modtime ON auth_store;
+CREATE TRIGGER update_auth_store_modtime
+  BEFORE UPDATE ON auth_store
+  FOR EACH ROW
+  EXECUTE FUNCTION update_modified_column();
+
+-- 8. RLS da tabela auth_store
+ALTER TABLE auth_store ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Service role full access" ON auth_store;
+CREATE POLICY "Service role full access"
+  ON auth_store
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "No anon access" ON auth_store;
+CREATE POLICY "No anon access"
+  ON auth_store
+  FOR ALL
+  TO anon
+  USING (false)
+  WITH CHECK (false);
+```
+
+---
+
+## Migração de banco já existente
+
+Se o Supabase já possui a modelagem antiga do projeto, o erro abaixo é esperado ao colar o SQL completo diretamente:
+
+```text
+ERROR: column "bot_id" does not exist
+```
+
+Isso acontece porque:
+
+- a tabela antiga `users` já existe
+- o `CREATE TABLE IF NOT EXISTS users (...)` não recria a tabela
+- portanto a coluna nova `bot_id` não é adicionada automaticamente
+- em seguida, o índice `idx_users_bot_lid` tenta usar uma coluna que ainda não existe
+
+### Opção A — Banco novo / ambiente limpo
+
+Se você ainda não precisa preservar dados, a solução mais simples é:
+
+1. apagar as tabelas antigas
+2. colar novamente o SQL completo desta documentação
+
+---
+
+### Opção B — Migrar a estrutura antiga sem perder dados
+
+Use o script abaixo para adaptar o schema antigo para a nova modelagem.
+
+> Este script parte da premissa de que o sistema antigo tinha `users(lid PK)`, `user_commands(lid)` e `user_allowed_groups(lid)`.
+
+```sql
+-- 1. Criar tabela de bots
+CREATE TABLE IF NOT EXISTS bots (
+  id TEXT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'inactive',
+  phone_jid VARCHAR(50),
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 2. Garantir bot default
+INSERT INTO bots (id, name, status)
+VALUES ('default', 'Bot Default', 'inactive')
+ON CONFLICT (id) DO NOTHING;
+
+-- 3. Expandir tabela users antiga
+ALTER TABLE users ADD COLUMN IF NOT EXISTS id BIGINT GENERATED BY DEFAULT AS IDENTITY;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_id TEXT;
+
+UPDATE users
+SET bot_id = 'default'
+WHERE bot_id IS NULL;
+
+ALTER TABLE users ALTER COLUMN bot_id SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_users_bot'
+  ) THEN
+    ALTER TABLE users
+    ADD CONSTRAINT fk_users_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_users_bot_lid'
+  ) THEN
+    ALTER TABLE users
+    ADD CONSTRAINT uq_users_bot_lid UNIQUE (bot_id, lid);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_users_id'
+  ) THEN
+    ALTER TABLE users
+    ADD CONSTRAINT uq_users_id UNIQUE (id);
+  END IF;
+END $$;
+
+-- 4. Expandir logs antigos
+ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS bot_id TEXT;
+ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS user_id BIGINT;
+
+UPDATE user_commands uc
+SET bot_id = 'default'
+WHERE uc.bot_id IS NULL;
+
+UPDATE user_commands uc
+SET user_id = u.id
+FROM users u
+WHERE uc.user_id IS NULL
+  AND uc.lid = u.lid
+  AND u.bot_id = 'default';
+
+ALTER TABLE user_commands ALTER COLUMN bot_id SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_commands_bot'
+  ) THEN
+    ALTER TABLE user_commands
+    ADD CONSTRAINT fk_user_commands_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_commands_user'
+  ) THEN
+    ALTER TABLE user_commands
+    ADD CONSTRAINT fk_user_commands_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+-- 5. Expandir grupos antigos
+ALTER TABLE user_allowed_groups ADD COLUMN IF NOT EXISTS bot_id TEXT;
+ALTER TABLE user_allowed_groups ADD COLUMN IF NOT EXISTS user_id BIGINT;
+
+UPDATE user_allowed_groups ug
+SET bot_id = 'default'
+WHERE ug.bot_id IS NULL;
+
+UPDATE user_allowed_groups ug
+SET user_id = u.id
+FROM users u
+WHERE ug.user_id IS NULL
+  AND ug.lid = u.lid
+  AND u.bot_id = 'default';
+
+ALTER TABLE user_allowed_groups ALTER COLUMN bot_id SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_allowed_groups_bot'
+  ) THEN
+    ALTER TABLE user_allowed_groups
+    ADD CONSTRAINT fk_user_allowed_groups_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_allowed_groups_user'
+  ) THEN
+    ALTER TABLE user_allowed_groups
+    ADD CONSTRAINT fk_user_allowed_groups_user
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_user_allowed_groups'
+  ) THEN
+    ALTER TABLE user_allowed_groups
+    ADD CONSTRAINT uq_user_allowed_groups UNIQUE (bot_id, user_id, group_id);
+  END IF;
+END $$;
+
+-- 6. Criar auth_store se ainda nao existir
+CREATE TABLE IF NOT EXISTS auth_store (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  key_type TEXT NOT NULL,
+  key_id TEXT NOT NULL,
+  data JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_auth_store_key UNIQUE (bot_id, key_type, key_id)
+);
+
+-- 6.1. Garantir FK auth_store -> bots em bancos que ja tinham auth_store sem relacionamento
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_auth_store_bot'
+  ) THEN
+    ALTER TABLE auth_store
+    ADD CONSTRAINT fk_auth_store_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+-- 7. Indices
+CREATE INDEX IF NOT EXISTS idx_users_bot_lid ON users(bot_id, lid);
+CREATE INDEX IF NOT EXISTS idx_user_commands_bot_user ON user_commands(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_user ON user_allowed_groups(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_group ON user_allowed_groups(bot_id, group_id);
+CREATE INDEX IF NOT EXISTS idx_auth_store_bot ON auth_store(bot_id, key_type);
+CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
+```
+
+### Observação importante sobre limpeza posterior
+
+Depois da migração estrutural, as colunas antigas baseadas em `lid` que ficaram em `user_commands` e `user_allowed_groups` podem ser removidas em uma segunda etapa, quando o código já estiver 100% usando `user_id`.
+
+---
+
+## 🧱 Tabela: `bots`
+
+Esta é a entidade central da modelagem.
+
+Cada registro representa uma instância real de bot WhatsApp.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `TEXT` | Identificador estável do bot. Ex: `default`, `cliente-a`, `suporte` |
+| `name` | `VARCHAR(100)` | Nome amigável da instância |
+| `status` | `VARCHAR(30)` | Estado operacional da instância (`inactive`, `pairing`, `ready`, `active`, `disconnected`) |
+| `phone_jid` | `VARCHAR(50)` | JID/número da instância quando conhecido |
+| `description` | `TEXT` | Campo opcional de documentação/admin |
+| `created_at` | `TIMESTAMPTZ` | Quando o bot foi provisionado |
+| `updated_at` | `TIMESTAMPTZ` | Última atualização do registro |
+
+### Por que essa tabela existe?
+
+Sem a tabela `bots`, o `bot_id` ficaria apenas como uma string solta espalhada pelo sistema.
+Com ela, o projeto passa a ter:
+
+- uma fonte oficial das instâncias existentes
+- integridade referencial para `auth_store`
+- integridade referencial para usuários, grupos e logs
+- base para painel administrativo e provisionamento
+
+---
+
+## 🔐 Autenticação persistente do WhatsApp (Baileys)
+
+Além das tabelas de domínio, o banco também armazena o estado de autenticação do WhatsApp, equivalente ao conteúdo da pasta `auth/`.
+
+## Objetivo
+
+Substituir o armazenamento local em arquivos por persistência no Supabase para:
+
+- evitar perda de sessão em ambientes efêmeros
+- permitir pareamento por frontend
+- centralizar o estado do bot no banco
+- suportar múltiplos bots de forma isolada
+
+---
+
+## 🧱 Tabela: `auth_store`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGINT` | Chave primária técnica |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `key_type` | `TEXT` | Tipo da chave do Baileys (`creds`, `pre-key`, `session`, etc.) |
+| `key_id` | `TEXT` | Identificador único dentro do tipo |
+| `data` | `JSONB` | Conteúdo serializado da chave/credencial |
+| `created_at` | `TIMESTAMPTZ` | Data de criação |
+| `updated_at` | `TIMESTAMPTZ` | Última atualização |
+
+### Finalidade dos campos
+
+- `bot_id`: isola a sessão de cada bot de forma formal e relacional
+- `key_type`: define a categoria da chave
+- `key_id`: define qual item daquela categoria está sendo salvo
+- `data`: guarda o JSON serializado com `BufferJSON`
+- `updated_at`: ajuda em auditoria, debug e diagnóstico de sessão
+
+---
+
+## 🔐 Segurança (RLS obrigatório)
+
+Regra de segurança para `auth_store`:
+
+- frontend não acessa `auth_store` diretamente
+- apenas backend com `service_role` lê/escreve credenciais
+- a chave `anon` deve ter acesso zero ao conteúdo de `data`
+
+Essa é a tabela mais sensível do sistema, porque contém material criptográfico do Signal Protocol.
+
+---
+
+## 🗂️ Mapeamento auth/ → auth_store
+
+| Arquivo antigo no filesystem | key_type | key_id | data |
+|---|---|---|---|
+| `creds.json` | `creds` | `main` | JSON completo |
+| `pre-key-1.json` | `pre-key` | `1` | JSON completo |
+| `session-556484051412.0.json` | `session` | `556484051412.0` | JSON completo |
+| `sender-key-status@broadcast--xxx.json` | `sender-key` | `status@broadcast--xxx` | JSON completo |
+| `app-state-sync-key-AAA.json` | `app-state-sync-key` | `AAA` | JSON completo |
+| `app-state-sync-version-regular.json` | `app-state-sync-version` | `regular` | JSON completo |
+
+---
+
+## 👤 Tabela: `users`
+
+No cenário multi-bot, usuário não pode mais ser identificado apenas por `lid` globalmente.
+O mesmo LID pode existir em mais de um bot com estados de permissão diferentes.
+
+Por isso a unicidade correta passa a ser:
+
+- `UNIQUE (bot_id, lid)`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGSERIAL` | Chave primária técnica |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `lid` | `VARCHAR(50)` | LID do usuário no WhatsApp |
+| `phone_jid` | `VARCHAR(50)` | JID informativo |
+| `push_name` | `VARCHAR(100)` | Nome exibido |
+| `is_admin` | `BOOLEAN` | Permissão administrativa dentro daquele bot |
+| `is_banned` | `BOOLEAN` | Banimento naquele bot |
+| `banned_at` | `TIMESTAMPTZ` | Data do ban |
+| `ban_reason` | `VARCHAR(255)` | Motivo do ban |
+| `muted_until` | `TIMESTAMPTZ` | Silenciamento temporário |
+| `cooldown_until` | `TIMESTAMPTZ` | Anti-spam |
+| `command_count` | `INTEGER` | Total de comandos usados naquele bot |
+| `daily_command_count` | `INTEGER` | Total diário naquele bot |
+| `daily_count_date` | `DATE` | Data de referência do contador diário |
+| `last_command_at` | `TIMESTAMPTZ` | Último comando |
+| `first_seen_at` | `TIMESTAMPTZ` | Primeira interação |
+| `updated_at` | `TIMESTAMPTZ` | Última atualização |
+
+---
+
+## 📊 Tabela: `user_commands`
+
+Esta tabela armazena o log de uso por instância de bot.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGSERIAL` | Chave primária |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `user_id` | `BIGINT` | FK para `users(id)` |
+| `command` | `VARCHAR(50)` | Nome do comando executado |
+| `used_at` | `TIMESTAMPTZ` | Momento da execução |
+
+### Por que usar `user_id` e `bot_id`?
+
+- `user_id` aponta para o usuário já resolvido dentro do contexto daquele bot
+- `bot_id` facilita filtros e relatórios sem joins adicionais
+- isso evita ambiguidades quando o mesmo LID participa de mais de um bot
+
+---
+
+## 📊 Tabela: `user_allowed_groups`
+
+Define em quais grupos um usuário pode usar determinado bot.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGSERIAL` | Chave primária |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `user_id` | `BIGINT` | FK para `users(id)` |
+| `group_id` | `VARCHAR(50)` | ID do grupo do WhatsApp |
+| `created_at` | `TIMESTAMPTZ` | Quando o vínculo foi criado |
+
+### Regra do sistema
+
+O bot só funciona em grupos previamente autorizados dentro da instância correta.
+
+Isso significa que:
+
+- grupo autorizado no bot A não autoriza automaticamente no bot B
+- permissões ficam isoladas por instância
+
+---
+
 ## 🔄 Fallback: Banco de Dados + `.env`
 
-O bot usa um sistema de **duas camadas** para controle de acesso:
+O sistema continua com fallback via `.env`, mas agora sempre no contexto do bot atual (`BOT_ID`).
 
 | Verificação | Fonte primária | Fallback (.env) |
 |---|---|---|
-| **Whitelist** (quem pode usar o bot) | Tabela `users` — se o LID existe e não está banido, passa | `WHITELIST_NUMBERS` no `.env` |
-| **Admin** (comandos restritos) | Campo `is_admin` na tabela `users` | `ADMIN_NUMBERS` no `.env` |
-| **Grupos autorizados** | Tabela `user_allowed_groups` | `ALLOWED_GROUPS` no `.env` |
+| whitelist | tabela `users` do `bot_id` atual | `WHITELIST_NUMBERS` |
+| admin | campo `is_admin` da tabela `users` do `bot_id` atual | `ADMIN_NUMBERS` |
+| grupos autorizados | tabela `user_allowed_groups` do `bot_id` atual | `ALLOWED_GROUPS` |
 
-### Como funciona na prática:
+### Como funciona na prática
 
-1. **Mensagem chega** → bot extrai o LID do remetente
-2. **Busca no banco** (`findUser`) → se o usuário existe no banco:
-   - Verifica `is_banned`, `muted_until`, `cooldown_until`
-   - Se tudo OK, processa o comando
-3. **Se NÃO existe no banco** → verifica o **fallback .env** (`WHITELIST_NUMBERS`):
-   - Se o LID está na lista do `.env`, **cria automaticamente** o registro no banco
-   - Se não está em nenhum dos dois, a mensagem é ignorada silenciosamente
-
-### Por que o fallback existe?
-
-- **Bootstrap:** Quando o banco está vazio, o admin precisa de uma forma de acessar o bot para começar a popular dados
-- **Segurança:** Se o Supabase ficar fora do ar, os números do `.env` continuam funcionando
-- **Migração gradual:** Permite migrar do controle por `.env` para o banco sem interrupção
-
-> 💡 **Quando quiser:** Depois que o banco estiver com todos os usuários e grupos cadastrados, você pode esvaziar `WHITELIST_NUMBERS` e `ALLOWED_GROUPS` do `.env`. O bot vai usar 100% o banco.
+1. O processo sobe com um `BOT_ID`
+2. Toda consulta ao banco é filtrada por esse `BOT_ID`
+3. Se não houver registro no banco, o sistema pode usar fallback do `.env`
+4. Se o fallback liberar o acesso, o registro é criado no banco já vinculado à instância correta
 
 ---
 
-# ⚠️ Nota sobre identificação de usuários: LID vs JID
+## ⚠️ Nota sobre identificação de usuários: LID vs JID
 
-O WhatsApp mudou a forma como identifica usuários internamente.  
-Antes, o identificador era o **JID** baseado no número de telefone (ex: `5564984051412@s.whatsapp.net`).  
-Agora, o WhatsApp usa o **LID (Linked Identity)** — um ID interno diferente do número de telefone (ex: `83339562246177@lid`).
+O WhatsApp hoje usa LID (Linked Identity), não apenas o número de telefone.
 
-No código do bot, o remetente é extraído assim:
-```ts
-const sender = message.key.participant || remoteJid;
+Por isso:
+
+- em grupos, o bot costuma receber `participant` como LID
+- em DMs, o `remoteJid` pode variar
+- a chave de negócio do usuário continua sendo o `lid`
+- mas agora o usuário é escopado por `bot_id`
+
+Consequência correta da modelagem:
+
+- não usar mais `lid` como PK global da tabela `users`
+- usar chave técnica `id` + unicidade `UNIQUE (bot_id, lid)`
+
+---
+
+## 🔌 Integração no núcleo do bot
+
+No startup do Baileys, a origem do auth state passa de filesystem para banco:
+
+```diff
+- const { state, saveCreds } = await useMultiFileAuthState("auth");
++ const { state, saveCreds } = await useSupabaseAuthState(process.env.BOT_ID);
 ```
 
-- Em **grupos**: `participant` retorna o LID do remetente (ex: `83339562246177@lid`)
-- Em **DMs**: `remoteJid` retorna o JID do chat (pode ser `@s.whatsapp.net` ou `@lid`)
+### Interface esperada
 
-Por isso, o bot possui o comando `meuid` — que permite qualquer pessoa descobrir seu LID para ser adicionada à whitelist.
+A função `useSupabaseAuthState` deve manter o contrato do Baileys:
 
-**Consequência para o banco:** A chave primária do usuário é o `lid` (a parte numérica do LID), não mais o número de telefone.
+- `state.creds`
+- `state.keys.get(type, ids)`
+- `state.keys.set(data)`
+- `saveCreds()`
 
----
+### Regra obrigatória
 
-# 🧱 Tabela: `users`
-
-| Campo                | Tipo         | Descrição                                                                 |
-|---------------------|-------------|--------------------------------------------------------------------------|
-| lid                 | VARCHAR(50) | LID do usuário — identificador único no WhatsApp (chave primária)       |
-| phone_jid           | VARCHAR(50) | JID baseado no número de telefone (opcional, apenas informativo)         |
-| push_name           | VARCHAR(100)| Nome exibido do contato                                                  |
-| is_admin            | BOOLEAN     | Define se o usuário é administrador                                      |
-| is_banned           | BOOLEAN     | Indica se o usuário está banido                                          |
-| banned_at           | DATETIME    | Quando o ban foi aplicado                                                |
-| ban_reason          | VARCHAR(255)| Motivo do ban                                                            |
-| muted_until         | DATETIME    | Até quando o usuário está silenciado                                     |
-| cooldown_until      | DATETIME    | Controle de anti-spam (bloqueia até esse horário)                        |
-| command_count       | INTEGER     | Total de comandos usados                                                 |
-| daily_command_count | INTEGER     | Quantidade de comandos usados no dia                                     |
-| daily_count_date    | DATE        | Data de referência do contador diário                                    |
-| last_command_at     | DATETIME    | Último comando executado                                                 |
-| first_seen_at       | DATETIME    | Primeira interação com o bot                                             |
-| updated_at          | DATETIME    | Última atualização do registro                                           |
+Todas as queries do projeto que lidam com autenticação, usuários, grupos e logs devem incluir `bot_id` explicitamente.
 
 ---
 
-## 🧠 Por que esses campos existem?
+## ⚡ Performance para Signal Protocol
 
-- **lid**  
-  Identifica unicamente cada usuário via LID (Linked Identity).  
-  É a parte numérica do identificador interno do WhatsApp (ex: `83339562246177`).  
-  Sem isso não existe controle.
+O Baileys faz muitas leituras e escritas de chave por mensagem. Sem cache, cada operação viraria query HTTP no Supabase.
 
-- **phone_jid**  
-  O JID antigo baseado no número de telefone (ex: `5564984051412`).  
-  Opcional e apenas informativo — útil para o admin saber qual número real está por trás do LID.  
-  Não deve ser usado como chave, pois nem sempre está disponível.
+Diretriz obrigatória:
 
-- **push_name**  
-  Apenas informativo. Pode mudar, então não deve ser usado como chave.
-
-- **is_admin**  
-  Permite criar comandos restritos (ban, broadcast, etc).
-
-- **is_banned / banned_at / ban_reason**  
-  Controle completo de banimento.  
-  O motivo evita dúvidas futuras e ajuda na administração.
-
-- **muted_until**  
-  Permite silenciar usuário temporariamente sem precisar de cron/job.  
-  O próprio tempo resolve o estado.
-
-- **cooldown_until**  
-  Protege contra spam/flood.  
-  Mesmo que você não limite uso, isso evita sobrecarga e problemas com o WhatsApp.
-
-- **command_count**  
-  Estatística geral de uso.
-
-- **daily_command_count + daily_count_date**  
-  Permite limitar uso diário sem precisar de job externo.  
-  O reset acontece automaticamente via lógica no código.
-
-- **last_command_at**  
-  Útil para debug e análise de comportamento.
-
-- **first_seen_at**  
-  Permite identificar novos usuários (ex: mensagem de boas-vindas).
-
-- **updated_at**  
-  Controle básico de alteração de dados.
+- usar cache em memória (`NodeCache`) para `keys.get` e `keys.set`
+- persistir no banco com upsert por lote quando possível
+- manter deleção explícita no banco quando valor vier `null`
+- cachear por `bot_id:type:key_id`, nunca apenas por `type:key_id`
 
 ---
 
-# 📊 Tabela: `user_commands`
+## 🔄 Migração de sessão existente
 
-| Campo    | Tipo         | Descrição                                         |
-|----------|-------------|--------------------------------------------------|
-| id       | INTEGER     | ID único do registro                             |
-| lid      | VARCHAR(50) | LID do usuário que executou o comando (FK → users)|
-| command  | VARCHAR(50) | Nome do comando executado                        |
-| used_at  | DATETIME    | Data e hora da execução                          |
+Para preservar sessão já ativa:
 
----
-
-## 🧠 Por que essa tabela existe?
-
-Essa tabela é responsável pelo **log de uso do bot**.
-
-- Permite saber quais comandos são mais usados
-- Ajuda a detectar abuso ou spam
-- Facilita debugging (quem executou o quê e quando)
-- Base para métricas futuras (ranking de usuários, etc)
-
-❗ Importante:  
-Não armazenar logs em campo TEXT dentro de `users`.  
-Separar em tabela própria é o que permite escalar.
+1. criar ou garantir o registro correspondente na tabela `bots`
+2. ler todos os arquivos da pasta `auth/`
+3. converter nome de arquivo em `key_type` + `key_id`
+4. inserir via upsert na `auth_store` usando o `bot_id` correto
+5. validar reconexão do bot pelo banco
+6. manter `auth/` como backup até estabilização
 
 ---
 
-# 📊 Tabela: `user_allowed_groups`
+## 🚀 Considerações finais
 
-| Campo      | Tipo         | Descrição                                         |
-|------------|-------------|--------------------------------------------------|
-| id         | INTEGER     | ID único do vínculo                              |
-| lid        | VARCHAR(50) | LID do usuário (FK → users)                      |
-| group_id   | VARCHAR(50) | ID do grupo do WhatsApp                          |
-| created_at | DATETIME    | Data de criação do vínculo                       |
+Essa modelagem foi construída com foco em:
 
----
-
-## 🧠 Por que essa tabela existe?
-
-Define **em quais grupos o usuário (identificado pelo LID) pode usar o bot**.
-
-### Regra do sistema:
-> O bot só funciona em grupos previamente autorizados.
-
-### Benefícios:
-
-- Evita uso indevido em grupos aleatórios
-- Permite controle fino por usuário
-- Escala facilmente (um usuário pode ter vários grupos)
-
----
-
-# 🔁 Fluxo de validação do bot (implementado)
-
-```
-mensagem recebida →
-
-1. Filtra mensagens do próprio bot, newsletters, status
-2. Grupo? → Verifica no banco (user_allowed_groups) → fallback ALLOWED_GROUPS do .env
-3. Comando "meuid"? → Responde com LID + ID do grupo (funciona SEM whitelist)
-4. Extrai LID do remetente (message.key.participant || remoteJid)
-5. Busca usuário no banco (findUser)
-   ├─ Existe? → Verifica ban → mute → cooldown
-   └─ Não existe? → Verifica WHITELIST_NUMBERS do .env
-                    ├─ Está no .env? → Cria registro automaticamente no banco
-                    └─ Não está? → Ignora silenciosamente
-6. Resolve isAdmin (banco is_admin OU ADMIN_NUMBERS do .env)
-7. Executa comando na feature correspondente
-8. Loga comando no banco (user_commands)
-9. Atualiza estatísticas do usuário (command_count, daily_command_count, etc)
-```
-
-**Implementação:** O pipeline completo está em `src/index.ts` (evento `messages.upsert`).
-O roteamento de comandos e log estão em `src/handlers/index.ts`.
-
----
-
-# 🚀 Considerações finais
-
-Essa modelagem foi construída e implementada com foco em:
-
-- **Simplicidade** — poucas tabelas, campos objetivos
-- **Performance** — índices nas colunas mais consultadas
-- **Facilidade de manutenção** — código modular em `src/database/`
-- **Resiliência** — fallback `.env` garante funcionamento mesmo sem banco
-- **Crescimento futuro** — estrutura pronta para novas features sem refatoração pesada
+- simplicidade operacional
+- separação clara entre domínio do bot e sessão do WhatsApp
+- suporte real a múltiplas instâncias
+- integridade referencial entre bots, usuários, grupos, logs e auth
+- crescimento futuro sem refatoração estrutural pesada
 
 ---
