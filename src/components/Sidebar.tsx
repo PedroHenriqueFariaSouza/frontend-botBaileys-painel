@@ -16,6 +16,7 @@ import PeopleIcon from "@mui/icons-material/People";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
 
 const DRAWER_WIDTH = 260;
 
@@ -32,6 +33,7 @@ const menuItems = [
   { key: "commands", label: "Comandos", icon: <TerminalIcon /> },
   { key: "groups", label: "Grupos Permitidos", icon: <GroupsIcon /> },
   { key: "pairing", label: "Pareamento", icon: <QrCode2Icon /> },
+  { key: "bots", label: "Gerenciar Bots", icon: <SmartToyIcon /> },
 ];
 
 const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic-bezier(0.4, 0, 0.2, 1)";

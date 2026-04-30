@@ -474,3 +474,115 @@ O admin do painel pode chamar esse endpoint para adicionar um novo bot sem preci
 | **3 — Frontend Web** | Interface de QR Code, autenticação, reconexão automática | Servir o HTML estático da interface |
 | **4 — Hardening** | WSS em produção, sem dados sensíveis no DOM | Criptografia opcional, monitoramento de saúde, fallback local, runbook |
 | **5 — Multi-Bot / Multi-Tenant** | Painel admin, isolamento por `bot_id`, provisionamento via UI | Garantir isolamento por `bot_id` em toda a base, tabela `bots`, endpoint de provisionamento |
+
+---
+
+## Ajustes no Núcleo do Bot — Pendências geradas pela implementação do Frontend
+
+> Esta seção documenta alterações no **núcleo do bot** que surgiram como consequência direta de decisões tomadas na implementação do frontend. Não faziam parte do planejamento original das fases, mas são obrigatórias para que o sistema funcione.
+
+---
+
+### Fase 4 — Hardening: autenticação do WebSocket por mensagem (não por query param)
+
+**Origem:** item 4.1 da Fase 4 — o frontend passou a enviar o token como primeira mensagem WebSocket em vez de expô-lo na URL (`?token=xxx`).
+
+**Motivação:** O token na URL aparece nos logs de acesso de qualquer proxy/CDN/nginx, no histórico do navegador e nos logs de rede do DevTools — o que viola o requisito 4.1 de não expor dados sensíveis.
+
+**O que o servidor do bot precisa mudar:**
+
+O handler do WebSocket em `/pair/ws` atualmente valida o token via `req.query.token` ou `req.headers.authorization` no momento do upgrade HTTP. Esse comportamento precisa ser substituído pelo seguinte fluxo:
+
+1. Aceitar a conexão WebSocket **sem validar token no upgrade** (remover o middleware de token no handshake HTTP do `/pair/ws`).
+2. Configurar um **timeout de autenticação** — se a primeira mensagem não chegar em até 5 segundos, fechar o socket com código `4401`.
+3. Aguardar a **primeira mensagem** do cliente. Ela deve ter o formato:
+   ```json
+   { "type": "auth", "token": "<PAIR_TOKEN>" }
+   ```
+4. Validar `token === process.env.PAIR_TOKEN`.
+   - Se **válido:** prosseguir normalmente (iniciar socket Baileys temporário, emitir QRs).
+   - Se **inválido ou ausente:** enviar `{ "type": "error", "message": "Unauthorized" }` e fechar o socket com código `4401`.
+5. Qualquer mensagem que **não seja do tipo `auth`** como primeira mensagem deve ser tratada como inválida — fechar o socket imediatamente.
+
+**Exemplo de estrutura no servidor (pseudocódigo):**
+
+```ts
+wss.on("connection", (ws) => {
+  const authTimeout = setTimeout(() => {
+    ws.close(4401, "Authentication timeout");
+  }, 5000);
+
+  ws.once("message", (raw) => {
+    clearTimeout(authTimeout);
+
+    let msg: { type: string; token?: string };
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      ws.close(4400, "Invalid message format");
+      return;
+    }
+
+    if (msg.type !== "auth" || msg.token !== process.env.PAIR_TOKEN) {
+      ws.send(JSON.stringify({ type: "error", message: "Unauthorized" }));
+      ws.close(4401, "Unauthorized");
+      return;
+    }
+
+    // Autenticado — iniciar fluxo de pareamento
+    startPairingSession(ws);
+  });
+});
+```
+
+**O middleware de token em rotas HTTP (`GET /pair`, etc.) não precisa mudar** — apenas o handler do WebSocket `/pair/ws` é afetado por esta alteração.
+
+---
+
+### Fase 5 — Multi-Bot: isolamento de instância via `bot_id` na mensagem de auth
+
+**Origem:** item 5.2 da Fase 5 — o frontend passou a incluir o campo `bot_id` na mensagem de autenticação WebSocket sempre que o pareamento é iniciado a partir do painel de gerenciamento de bots.
+
+**Motivação:** Com múltiplas instâncias de bot registradas na tabela `bots`, o servidor precisa saber qual instância está sendo pareada para gravar as credenciais Baileys no registro correto de `auth_store`.
+
+**Formato atualizado da mensagem de auth:**
+
+```json
+{ "type": "auth", "token": "<PAIR_TOKEN>", "bot_id": "clienteA" }
+```
+
+O campo `bot_id` é **opcional** — se omitido, o servidor deve usar a instância padrão (comportamento anterior).
+
+**O que o servidor do bot precisa mudar:**
+
+1. Após validar o `token` (ver Fase 4 acima), extrair `msg.bot_id` da mensagem de auth.
+2. Se `bot_id` estiver presente:
+   - Verificar se existe um registro correspondente na tabela `bots` (`SELECT * FROM bots WHERE id = $bot_id`).
+   - Usar esse `bot_id` como prefixo/chave ao gravar e ler credenciais Baileys no `auth_store` (`WHERE bot_id = $bot_id`).
+   - Atualizar o campo `status` da tabela `bots` durante o fluxo: `"pairing"` ao aguardar QR, `"active"` ao conectar com sucesso, `"disconnected"` ao fechar.
+3. Se `bot_id` for omitido, manter o comportamento padrão (instância única ou instância com id `"default"`).
+
+**Exemplo de adaptação no servidor (pseudocódigo):**
+
+```ts
+ws.once("message", (raw) => {
+  clearTimeout(authTimeout);
+  const msg = JSON.parse(raw.toString());
+
+  if (msg.type !== "auth" || msg.token !== process.env.PAIR_TOKEN) {
+    ws.send(JSON.stringify({ type: "error", message: "Unauthorized" }));
+    ws.close(4401, "Unauthorized");
+    return;
+  }
+
+  const botId: string = msg.bot_id ?? "default";
+
+  // Gravar status de pareamento no Supabase
+  await supabase.from("bots").upsert({ id: botId, status: "pairing" });
+
+  // Iniciar sessão Baileys usando auth_store filtrado por bot_id
+  startPairingSession(ws, botId);
+});
+```
+
+**Nenhuma rota HTTP nem a lógica de autenticação do token precisam mudar** — somente o handler do WebSocket `/pair/ws` é afetado.

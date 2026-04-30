@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Paper,
   TextField,
@@ -14,6 +15,8 @@ import QrCode2Icon from "@mui/icons-material/QrCode2";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import WifiOffIcon from "@mui/icons-material/WifiOff";
+import LockIcon from "@mui/icons-material/Lock";
+import LockOpenIcon from "@mui/icons-material/LockOpen";
 
 type WsStatus =
   | "idle"
@@ -33,17 +36,37 @@ interface WsMessage {
 const MAX_RETRIES = 5;
 const RECONNECT_DELAY_MS = 2500;
 
-export default function PairingPage() {
+/**
+ * Deriva o URL padrão do WebSocket respeitando o protocolo da página.
+ * HTTPS → wss://, HTTP → ws://  (4.2)
+ */
+function defaultWsUrl(): string {
+  const envUrl = import.meta.env.VITE_PAIR_WS_URL as string | undefined;
+  if (envUrl) return envUrl;
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://localhost:3000/pair/ws`;
+}
+
+interface PairingPageProps {
+  /** Quando fornecido (vindo de BotsPage), o campo bot_id fica bloqueado neste valor. */
+  botId?: string;
+}
+
+export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
   const theme = useTheme();
 
   const [token, setToken] = useState("");
-  const [wsUrl, setWsUrl] = useState(
-    import.meta.env.VITE_PAIR_WS_URL ?? "ws://localhost:3000/pair/ws"
-  );
+  const [botId, setBotId] = useState(botIdProp ?? "");
+  const [wsUrl, setWsUrl] = useState(defaultWsUrl);
   const [status, setStatus] = useState<WsStatus>("idle");
   const [qrBase64, setQrBase64] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+
+  // Sincroniza se o pai mudar botIdProp (ex: navegação de BotsPage)
+  useEffect(() => {
+    setBotId(botIdProp ?? "");
+  }, [botIdProp]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,17 +90,32 @@ export default function PairingPage() {
     }
   }, []);
 
+  /**
+   * 4.2 — Retorna true se a combinação página-HTTPS / ws:// vai causar mixed-content.
+   */
+  const hasMixedContent =
+    window.location.protocol === "https:" && wsUrl.startsWith("ws://");
+
   const connect = useCallback(
-    (currentToken: string, currentWsUrl: string) => {
+    (currentToken: string, currentWsUrl: string, currentBotId: string) => {
       closeWs();
       setStatus("connecting");
       setQrBase64(null);
 
-      const url = `${currentWsUrl}?token=${encodeURIComponent(currentToken)}`;
-      const ws = new WebSocket(url);
+      // 4.1 — Token enviado como primeira mensagem após abertura do socket,
+      // nunca exposto na URL nem em atributos do DOM.
+      const ws = new WebSocket(currentWsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // 5.2 — bot_id incluído na mensagem de auth para isolamento por instância
+        ws.send(
+          JSON.stringify({
+            type: "auth",
+            token: currentToken,
+            ...(currentBotId ? { bot_id: currentBotId } : {}),
+          })
+        );
         retryCountRef.current = 0;
         setRetryCount(0);
         setStatus("waiting_qr");
@@ -123,7 +161,7 @@ export default function PairingPage() {
         setStatus("reconnecting");
         retryTimerRef.current = setTimeout(() => {
           if (activeRef.current) {
-            connect(currentToken, currentWsUrl);
+            connect(currentToken, currentWsUrl, currentBotId);
           }
         }, RECONNECT_DELAY_MS);
       };
@@ -141,7 +179,7 @@ export default function PairingPage() {
     retryCountRef.current = 0;
     setRetryCount(0);
     activeRef.current = true;
-    connect(token, wsUrl);
+    connect(token, wsUrl, botId);
   };
 
   const handleStop = () => {
@@ -160,7 +198,7 @@ export default function PairingPage() {
     retryCountRef.current = 0;
     setRetryCount(0);
     activeRef.current = true;
-    connect(token, wsUrl);
+    connect(token, wsUrl, botId);
   };
 
   // Limpar ao desmontar
@@ -184,6 +222,9 @@ export default function PairingPage() {
       </Typography>
       <Typography variant="body2" color="text.secondary" mb={3}>
         Escaneie o QR Code com o WhatsApp para parear uma instância do bot.
+        {botIdProp && (
+          <> Bot selecionado: <strong>{botIdProp}</strong>.</>
+        )}
       </Typography>
 
       {/* Formulário de configuração */}
@@ -205,10 +246,53 @@ export default function PairingPage() {
             value={wsUrl}
             onChange={(e) => setWsUrl(e.target.value)}
             disabled={isConnecting || status === "success"}
-            placeholder="ws://localhost:3000/pair/ws"
+            placeholder="wss://seu-servidor:3000/pair/ws"
             fullWidth
             size="small"
-            helperText="Ex: ws://seu-servidor:3000/pair/ws"
+            error={hasMixedContent}
+            helperText={
+              hasMixedContent
+                ? "⚠️ Mixed-content: página em HTTPS mas URL usa ws://. Troque para wss://."
+                : "Em produção use wss:// (WebSocket Secure)"
+            }
+            InputProps={{
+              endAdornment: (
+                <Chip
+                  icon={
+                    wsUrl.startsWith("wss://") ? (
+                      <LockIcon fontSize="small" />
+                    ) : (
+                      <LockOpenIcon fontSize="small" />
+                    )
+                  }
+                  label={wsUrl.startsWith("wss://") ? "Seguro" : "Inseguro"}
+                  color={wsUrl.startsWith("wss://") ? "success" : "warning"}
+                  size="small"
+                  sx={{ ml: 1 }}
+                />
+              ),
+            }}
+          />
+          {hasMixedContent && (
+            <Alert severity="error" sx={{ py: 0.5 }}>
+              <strong>Mixed-content bloqueado pelo navegador.</strong> A página está em
+              HTTPS mas o WebSocket usa <code>ws://</code>. O navegador irá bloquear a
+              conexão. Altere para <code>wss://</code> ou sirva o frontend em HTTP.
+            </Alert>
+          )}
+          <TextField
+            label="Bot ID"
+            value={botId}
+            onChange={(e) => setBotId(e.target.value)}
+            disabled={!!botIdProp || isConnecting || status === "success"}
+            placeholder="ex: default, clienteA"
+            fullWidth
+            size="small"
+            helperText={
+              botIdProp
+                ? "Bot selecionado a partir do painel de gerenciamento."
+                : "Deixe vazio para usar o bot padrão do servidor."
+            }
           />
           <TextField
             label="Token de Acesso"
@@ -231,7 +315,7 @@ export default function PairingPage() {
                 variant="contained"
                 startIcon={<QrCode2Icon />}
                 onClick={status === "error" ? handleRetry : handleStart}
-                disabled={!token.trim()}
+                disabled={!token.trim() || hasMixedContent}
               >
                 {status === "error" ? "Tentar Novamente" : "Iniciar Pareamento"}
               </Button>

@@ -1,3 +1,10 @@
+export interface Bot {
+  id: string;
+  status: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface User {
   lid: string;
   phone_jid: string | null;

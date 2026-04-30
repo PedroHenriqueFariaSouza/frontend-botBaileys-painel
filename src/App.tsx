@@ -1,15 +1,55 @@
-import { useState } from "react";
-import { Box } from "@mui/material";
+import { useEffect, useState } from "react";
+import { Box, Button, CircularProgress } from "@mui/material";
+import type { Session } from "@supabase/supabase-js";
 import Sidebar from "./components/Sidebar";
 import DashboardPage from "./pages/DashboardPage";
 import UsersPage from "./pages/UsersPage";
 import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
 import PairingPage from "./pages/PairingPage";
+import BotsPage from "./pages/BotsPage";
+import LoginPage from "./pages/LoginPage";
+import { supabase } from "./lib/supabase";
 
 function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [selectedBotId, setSelectedBotId] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session ?? null);
+      setCheckingAuth(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setCheckingAuth(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  function handleNavigate(p: string) {
+    // Limpa o bot selecionado ao sair da tela de pareamento via sidebar
+    if (p !== "pairing") setSelectedBotId(undefined);
+    setPage(p);
+  }
+
+  function handlePairBot(botId: string) {
+    setSelectedBotId(botId);
+    setPage("pairing");
+  }
 
   function renderPage() {
     switch (page) {
@@ -20,10 +60,37 @@ function App() {
       case "groups":
         return <GroupsPage />;
       case "pairing":
-        return <PairingPage />;
+        return <PairingPage botId={selectedBotId} />;
+      case "bots":
+        return <BotsPage onPairBot={handlePairBot} />;
       default:
         return <UsersPage />;
     }
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    setSelectedBotId(undefined);
+    setPage("dashboard");
+  }
+
+  if (checkingAuth) {
+    return (
+      <Box
+        sx={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (!session) {
+    return <LoginPage />;
   }
 
   return (
@@ -32,7 +99,7 @@ function App() {
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((prev) => !prev)}
         currentPage={page}
-        onNavigate={setPage}
+        onNavigate={handleNavigate}
       />
       <Box
         component="main"
@@ -43,6 +110,11 @@ function App() {
           minHeight: "100vh",
         }}
       >
+        <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+          <Button variant="outlined" size="small" onClick={() => void handleLogout()}>
+            Sair
+          </Button>
+        </Box>
         {renderPage()}
       </Box>
     </Box>

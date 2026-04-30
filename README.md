@@ -1,88 +1,262 @@
 # BotBaileys Painel
 
-Painel administrativo web para gerenciar o bot WhatsApp (BotBaileys). Permite visualizar e acompanhar usuários, comandos executados e grupos permitidos, consumindo dados diretamente do Supabase.
+Painel administrativo web para operação de múltiplos bots WhatsApp com Supabase, incluindo:
 
-## Stack
+- login administrativo com sessão (magic link)
+- gerenciamento de bots
+- pareamento por QR Code em tempo real via WebSocket
+- visualização de usuários, comandos e grupos permitidos
 
-- **React 19** — Biblioteca de UI
-- **TypeScript** — Tipagem estática
-- **Vite 8** — Bundler e dev server
-- **Material UI v7** — Componentes visuais
-- **Supabase** — Banco de dados (PostgreSQL hospedado)
+## Requisitos
 
-## Estrutura do Projeto
-
-```
-src/
-├── lib/
-│   └── supabase.ts             # Client Supabase (inicialização)
-├── types/
-│   └── database.ts             # Tipos: User, UserCommand, UserAllowedGroup
-├── components/
-│   └── Sidebar.tsx             # Menu lateral (abre/fecha)
-├── pages/
-│   ├── UsersPage.tsx           # Tabela de usuários
-│   ├── CommandsPage.tsx        # Log de comandos executados
-│   └── GroupsPage.tsx          # Grupos permitidos por usuário
-├── App.tsx                     # Layout com sidebar + navegação
-├── main.tsx                    # Entry point com ThemeProvider
-└── theme.ts                    # Configuração do tema MUI
-```
+- Node.js 20 ou superior
+- npm 10 ou superior
+- Projeto Supabase configurado
+- Núcleo do bot com endpoint WebSocket de pareamento disponível
 
 ## Instalação
+
+1. Instalar dependências:
 
 ```bash
 npm install
 ```
 
-## Configuração
+2. Criar seu arquivo de ambiente a partir do template:
 
-Crie um arquivo `.env` na raiz do projeto com as credenciais do Supabase:
-
-```env
-VITE_SUPABASE_URL=https://seu-projeto.supabase.co
-VITE_SUPABASE_KEY=sua_chave_aqui
+```bash
+cp .env.example .env
 ```
 
-> As variáveis usam o prefixo `VITE_` porque é assim que o Vite expõe variáveis de ambiente para o código frontend.
+No Windows PowerShell, se preferir:
 
-## Scripts
+```powershell
+Copy-Item .env.example .env
+```
 
-| Comando           | O que faz                                                        |
-|-------------------|------------------------------------------------------------------|
-| `npm run dev`     | Servidor de desenvolvimento com hot reload (porta 5173)          |
-| `npm run build`   | Gera o bundle otimizado para produção na pasta `dist/`           |
-| `npm run preview` | Serve localmente o último build gerado                           |
-| `npm run prod`    | Builda e abre o preview de produção em sequência                 |
+3. Preencher as variáveis do arquivo .env.
 
-### Desenvolvimento vs Produção
+4. Executar em desenvolvimento:
 
-- **`npm run dev`** — Use durante o desenvolvimento. O Vite sobe um servidor local com HMR (Hot Module Replacement), ou seja, qualquer alteração no código reflete instantaneamente no navegador sem recarregar a página.
+```bash
+npm run dev
+```
 
-- **`npm run build`** — Gera arquivos estáticos otimizados (HTML, JS, CSS) na pasta `dist/`. Esses arquivos são o que você hospeda em produção (Vercel, Netlify, Nginx, etc).
+## Variáveis de Ambiente
 
-- **`npm run prod`** — Atalho que executa o build e abre o preview logo em seguida, útil para testar localmente como o app se comporta em modo de produção.
+Arquivo de referência: [.env.example](.env.example)
 
-## Por que não usamos Nodemon?
+### VITE_SUPABASE_URL
 
-O **Nodemon** é uma ferramenta que monitora alterações em arquivos e reinicia automaticamente um processo Node.js. Ele é excelente para projetos **backend** (servidores Express, APIs, bots), onde você precisa reiniciar o processo para que as mudanças tenham efeito.
+- O que é: URL do projeto Supabase.
+- Onde encontrar: Supabase Dashboard > Settings > API > Project URL.
+- Exemplo de valor: https://abcxyzcompany.supabase.co
 
-Neste projeto **não faz sentido usar Nodemon** porque:
+### VITE_SUPABASE_KEY
 
-1. **O Vite já faz isso nativamente e melhor.** O dev server do Vite possui HMR (Hot Module Replacement), que atualiza o navegador instantaneamente quando você salva um arquivo — sem reiniciar nenhum processo e sem perder o estado da aplicação.
+- O que é: chave pública (anon key) usada pelo frontend para autenticação e consultas permitidas pelo RLS.
+- Onde encontrar: Supabase Dashboard > Settings > API > Project API Keys > anon public.
+- Importante: não usar service_role no frontend.
 
-2. **Nodemon reinicia o processo inteiro.** Em um frontend, isso significaria derrubar e subir o servidor de desenvolvimento toda vez que um arquivo muda. O HMR do Vite é cirurgicamente mais eficiente: ele atualiza apenas o módulo que mudou.
+### VITE_PAIR_WS_URL
 
-3. **Não há processo persistente para "reiniciar".** Em produção, o frontend vira arquivos estáticos (`dist/`). Não existe um servidor Node.js rodando permanentemente que precise ser reiniciado.
+- O que é: URL do endpoint WebSocket do servidor de pareamento do bot.
+- Onde definir: endpoint exposto pelo núcleo do bot (rota /pair/ws).
+- Exemplo local: ws://localhost:3000/pair/ws
+- Exemplo produção: wss://bot-api.seudominio.com/pair/ws
+- Importante: em página HTTPS, usar wss para evitar bloqueio de mixed content.
 
-**Resumo:** Nodemon = ótimo para backend. Vite HMR = a solução correta para frontend. Instalar Nodemon aqui seria redundante e sem efeito prático.
+## Configurações Obrigatórias no Supabase
 
-## Tabelas do Banco (Supabase)
+### Authentication (Magic Link)
 
-O painel consome 3 tabelas:
+1. Authentication > Providers > Email: habilitar.
+2. Authentication > URL Configuration: cadastrar Redirect URLs do frontend.
+3. Definir política interna para quais emails podem acessar o painel admin.
 
-- **`users`** — Usuários do bot (LID, nome, status admin/ban/mute, contadores de uso)
-- **`user_commands`** — Log de todos os comandos executados (quem, qual comando, quando)
-- **`user_allowed_groups`** — Vínculos de quais grupos cada usuário pode usar o bot
+Exemplos de Redirect URLs:
 
-A modelagem completa está documentada em `modelagemBancoBotWhatsapp.md`.
+- http://localhost:5173
+- https://painel.seudominio.com
+
+### Realtime (Tabela bots)
+
+Para o status dos bots atualizar em tempo real no painel:
+
+1. Database > Replication: habilitar realtime para a tabela bots.
+2. Confirmar que a tabela pública bots está na publicação usada pelo Realtime.
+
+Sem isso, a listagem funciona normalmente, porém sem atualização instantânea.
+
+## Como Executar
+
+### Desenvolvimento
+
+```bash
+npm run dev
+```
+
+### Build de produção
+
+```bash
+npm run build
+```
+
+### Preview do build
+
+```bash
+npm run preview
+```
+
+### Build + preview em sequência
+
+```bash
+npm run prod
+```
+
+## Funcionalidades Implementadas
+
+### Segurança e acesso
+
+- Login por magic link com Supabase Auth
+- Bloqueio das páginas internas quando não há sessão
+- Logout pelo próprio painel
+
+### Pareamento
+
+- Conexão WebSocket com reconexão automática
+- Recebimento de QR Code em tempo real
+- Mensagens de sucesso e erro do fluxo
+- Envio de token e bot_id na mensagem de autenticação (sem expor na URL)
+
+### Multi-bot
+
+- Tela para listar bots
+- Cadastro de novo bot
+- Remoção de bot
+- Ação direta para abrir pareamento de um bot específico
+- Atualização em tempo real da tabela bots
+
+### Operação diária
+
+- Dashboard
+- Usuários
+- Comandos
+- Grupos permitidos
+
+## Estrutura Principal
+
+```text
+src/
+	components/
+		Sidebar.tsx
+	lib/
+		supabase.ts
+	pages/
+		BotsPage.tsx
+		CommandsPage.tsx
+		DashboardPage.tsx
+		GroupsPage.tsx
+		LoginPage.tsx
+		PairingPage.tsx
+		UsersPage.tsx
+	types/
+		database.ts
+	App.tsx
+	main.tsx
+	theme.ts
+docs/
+	react.md
+	typescript.md
+	vite.md
+	material-ui.md
+	supabase.md
+	websocket-pairing.md
+```
+
+## Árvore de Responsabilidades
+
+```text
+raiz/
+	src/
+		Responsabilidade: codigo fonte da aplicacao frontend
+
+		components/
+			Responsabilidade: componentes compartilhados de interface
+			Exemplo: Sidebar.tsx controla navegacao lateral
+
+		lib/
+			Responsabilidade: integracoes e clientes externos
+			Exemplo: supabase.ts inicializa client do Supabase
+
+		pages/
+			Responsabilidade: telas de negocio do painel
+			Exemplo: BotsPage.tsx, PairingPage.tsx, LoginPage.tsx
+
+		types/
+			Responsabilidade: contratos e tipagens de dados
+			Exemplo: database.ts define interfaces das tabelas
+
+		App.tsx
+			Responsabilidade: layout principal, guarda de autenticacao e roteamento por estado
+
+		main.tsx
+			Responsabilidade: bootstrap do React e providers globais
+
+		theme.ts
+			Responsabilidade: tema visual central da aplicacao
+
+	docs/
+		Responsabilidade: documentacao tecnica complementar por tecnologia
+		Exemplo: react.md, supabase.md, websocket-pairing.md
+
+	public/
+		Responsabilidade: arquivos estaticos servidos sem processamento
+
+	.env.example
+		Responsabilidade: template oficial de configuracao de ambiente
+
+	README.md
+		Responsabilidade: guia principal de instalacao, execucao e operacao
+```
+
+## Banco de Dados Utilizado pelo Frontend
+
+Tabelas consumidas:
+
+- bots
+- users
+- user_commands
+- user_allowed_groups
+
+Modelagem e contexto geral: [modelagemBancoBotWhatsapp.md](modelagemBancoBotWhatsapp.md)
+
+## Troubleshooting Rápido
+
+### Não consigo logar
+
+- Verifique se o provider Email está habilitado no Supabase.
+- Confira se a URL atual está em Redirect URLs.
+- Veja se o email usado está autorizado pela regra interna do projeto.
+
+### Painel abre, mas bots não atualizam em tempo real
+
+- Verifique se Realtime está habilitado para a tabela bots.
+- Confirme que há eventos de update/insert/delete sendo disparados no banco.
+
+### Erro no pareamento via WebSocket
+
+- Confirme valor correto de VITE_PAIR_WS_URL.
+- Se frontend está em HTTPS, garanta endpoint em wss.
+- Verifique token e validação no backend do bot.
+
+## Detalhamentos Técnicos
+
+Documentação técnica separada por tecnologia e importância no projeto:
+
+- [React](docs/react.md)
+- [TypeScript](docs/typescript.md)
+- [Vite](docs/vite.md)
+- [Material UI](docs/material-ui.md)
+- [Supabase](docs/supabase.md)
+- [WebSocket de pareamento](docs/websocket-pairing.md)
