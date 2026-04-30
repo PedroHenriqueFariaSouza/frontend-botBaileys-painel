@@ -8,7 +8,7 @@ import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
 import PairingPage from "./pages/PairingPage";
 import BotsPage from "./pages/BotsPage";
-import LoginPage from "./pages/LoginPage";
+import LoginPage from "./pages/LoginPage.tsx";
 import { supabase } from "./lib/supabase";
 
 function App() {
