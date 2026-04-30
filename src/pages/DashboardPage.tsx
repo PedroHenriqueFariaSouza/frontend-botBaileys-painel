@@ -15,6 +15,8 @@ import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
+import HubIcon from "@mui/icons-material/Hub";
 import {
   BarChart,
   Bar,
@@ -31,7 +33,7 @@ import {
   Legend,
 } from "recharts";
 import { supabase } from "../lib/supabase";
-import type { User, UserCommand } from "../types/database";
+import type { Bot, User, UserCommand } from "../types/database";
 
 interface KPI {
   label: string;
@@ -60,13 +62,26 @@ interface TopUser {
   commands: number;
 }
 
+interface BotStatusData {
+  name: string;
+  value: number;
+}
+
+interface BotMetric {
+  bot: string;
+  users?: number;
+  commands?: number;
+}
+
 const PIE_COLORS = ["#4caf50", "#f44336", "#ff9800", "#2196f3"];
+const BOT_STATUS_COLORS = ["#4caf50", "#ff9800", "#42a5f5", "#f44336", "#9e9e9e"];
 
 export default function DashboardPage() {
   const theme = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [, setBots] = useState<Bot[]>([]);
   const [, setUsers] = useState<User[]>([]);
   const [, setCommands] = useState<UserCommand[]>([]);
 
@@ -76,6 +91,9 @@ export default function DashboardPage() {
   const [userStatus, setUserStatus] = useState<UserStatusData[]>([]);
   const [topUsers, setTopUsers] = useState<TopUser[]>([]);
   const [newUsersPerDay, setNewUsersPerDay] = useState<{ date: string; users: number }[]>([]);
+  const [botStatus, setBotStatus] = useState<BotStatusData[]>([]);
+  const [usersByBot, setUsersByBot] = useState<BotMetric[]>([]);
+  const [commandsByBot, setCommandsByBot] = useState<BotMetric[]>([]);
 
   useEffect(() => {
     fetchData();
@@ -84,20 +102,24 @@ export default function DashboardPage() {
   async function fetchData() {
     setLoading(true);
     try {
-      const [usersRes, commandsRes] = await Promise.all([
+      const [botsRes, usersRes, commandsRes] = await Promise.all([
+        supabase.from("bots").select("*"),
         supabase.from("users").select("*"),
         supabase.from("user_commands").select("*").order("used_at", { ascending: false }).limit(5000),
       ]);
 
+      if (botsRes.error) throw botsRes.error;
       if (usersRes.error) throw usersRes.error;
       if (commandsRes.error) throw commandsRes.error;
 
+      const botsData = (botsRes.data ?? []) as Bot[];
       const usersData = (usersRes.data ?? []) as User[];
       const commandsData = (commandsRes.data ?? []) as UserCommand[];
 
+      setBots(botsData);
       setUsers(usersData);
       setCommands(commandsData);
-      processData(usersData, commandsData);
+      processData(botsData, usersData, commandsData);
     } catch (err: any) {
       setError(err.message ?? "Erro ao carregar dados");
     } finally {
@@ -105,8 +127,15 @@ export default function DashboardPage() {
     }
   }
 
-  function processData(usersData: User[], commandsData: UserCommand[]) {
+  function processData(botsData: Bot[], usersData: User[], commandsData: UserCommand[]) {
     // --- KPIs ---
+    const totalBots = botsData.length;
+    const activeBots = botsData.filter((b) => {
+      const status = (b.status ?? "").toLowerCase();
+      return status === "active" || status === "ready";
+    }).length;
+    const pairingBots = botsData.filter((b) => (b.status ?? "").toLowerCase() === "pairing").length;
+
     const totalUsers = usersData.length;
     const bannedUsers = usersData.filter((u) => u.is_banned).length;
     const adminUsers = usersData.filter((u) => u.is_admin).length;
@@ -117,6 +146,9 @@ export default function DashboardPage() {
     const newToday = usersData.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
 
     setKpis([
+      { label: "Bots Cadastrados", value: totalBots, icon: <SmartToyIcon />, color: "#5e35b1" },
+      { label: "Bots Online", value: activeBots, icon: <HubIcon />, color: "#26a69a" },
+      { label: "Pareando Agora", value: pairingBots, icon: <TrendingUpIcon />, color: "#ff9800" },
       { label: "Total Usuários", value: totalUsers, icon: <PeopleIcon />, color: "#2196f3" },
       { label: "Ativos Hoje", value: activeToday, icon: <TrendingUpIcon />, color: "#4caf50" },
       { label: "Novos Hoje", value: newToday, icon: <PersonAddIcon />, color: "#00bcd4" },
@@ -124,6 +156,46 @@ export default function DashboardPage() {
       { label: "Banidos", value: bannedUsers, icon: <BlockIcon />, color: "#f44336" },
       { label: "Total Comandos", value: totalCommands.toLocaleString("pt-BR"), icon: <TerminalIcon />, color: "#9c27b0" },
     ]);
+
+    // --- Bot status pie ---
+    const botStatusMap = new Map<string, number>();
+    botsData.forEach((bot) => {
+      const statusRaw = (bot.status ?? "desconhecido").toLowerCase();
+      const normalized = statusRaw === "inactive" ? "disconnected" : statusRaw;
+      botStatusMap.set(normalized, (botStatusMap.get(normalized) ?? 0) + 1);
+    });
+    setBotStatus(
+      [...botStatusMap.entries()].map(([name, value]) => ({
+        name,
+        value,
+      }))
+    );
+
+    // --- Users by bot ---
+    const usersByBotMap = new Map<string, number>();
+    usersData.forEach((u) => {
+      const key = u.bot_id ?? "default";
+      usersByBotMap.set(key, (usersByBotMap.get(key) ?? 0) + 1);
+    });
+    setUsersByBot(
+      [...usersByBotMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([bot, users]) => ({ bot, users }))
+    );
+
+    // --- Commands by bot ---
+    const commandsByBotMap = new Map<string, number>();
+    commandsData.forEach((c) => {
+      const key = c.bot_id ?? "default";
+      commandsByBotMap.set(key, (commandsByBotMap.get(key) ?? 0) + 1);
+    });
+    setCommandsByBot(
+      [...commandsByBotMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([bot, commands]) => ({ bot, commands }))
+    );
 
     // --- Top 10 Commands ---
     const cmdMap = new Map<string, number>();
@@ -152,7 +224,7 @@ export default function DashboardPage() {
     });
     setDailyActivity(
       [...last30.entries()].map(([date, commands]) => ({
-        date: date.slice(5), // MM-DD
+        date: date.slice(5),
         commands,
       }))
     );
@@ -204,7 +276,6 @@ export default function DashboardPage() {
       }))
     );
   }
-
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", mt: 8 }}>
@@ -262,6 +333,86 @@ export default function DashboardPage() {
             </Paper>
           </Grid>
         ))}
+      </Grid>
+
+      {/* Row 0: Visão Multi-Bot */}
+      <Grid container spacing={3} sx={{ mb: 3 }}>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Status dos Bots
+            </Typography>
+            <ResponsiveContainer width="100%" height={270}>
+              <PieChart>
+                <Pie
+                  data={botStatus}
+                  cx="50%"
+                  cy="45%"
+                  innerRadius={52}
+                  outerRadius={92}
+                  paddingAngle={3}
+                  dataKey="value"
+                  label={({ name, percent }: { name?: string; percent?: number }) =>
+                    `${name ?? ""} ${((percent ?? 0) * 100).toFixed(0)}%`
+                  }
+                  labelLine={false}
+                >
+                  {botStatus.map((_entry, index) => (
+                    <Cell key={index} fill={BOT_STATUS_COLORS[index % BOT_STATUS_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend verticalAlign="bottom" height={36} />
+              </PieChart>
+            </ResponsiveContainer>
+          </Paper>
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Usuários por Bot (Top 10)
+            </Typography>
+            <ResponsiveContainer width="100%" height={270}>
+              <BarChart data={usersByBot} layout="vertical" margin={{ left: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
+                <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
+                <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: theme.palette.background.paper,
+                    border: `1px solid ${theme.palette.divider}`,
+                    borderRadius: 8,
+                  }}
+                />
+                <Bar dataKey="users" name="Usuários" fill="#42a5f5" radius={[0, 6, 6, 0]} barSize={18} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Paper>
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Comandos por Bot (Top 10)
+            </Typography>
+            <ResponsiveContainer width="100%" height={270}>
+              <BarChart data={commandsByBot} layout="vertical" margin={{ left: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
+                <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
+                <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: theme.palette.background.paper,
+                    border: `1px solid ${theme.palette.divider}`,
+                    borderRadius: 8,
+                  }}
+                />
+                <Bar dataKey="commands" name="Comandos" fill="#7e57c2" radius={[0, 6, 6, 0]} barSize={18} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Paper>
+        </Grid>
       </Grid>
 
       {/* Row 1: Activity + Status */}
