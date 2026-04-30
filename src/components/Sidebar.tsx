@@ -15,6 +15,7 @@ import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
+import QrCode2Icon from "@mui/icons-material/QrCode2";
 
 const DRAWER_WIDTH = 260;
 
@@ -30,6 +31,7 @@ const menuItems = [
   { key: "users", label: "Usuários", icon: <PeopleIcon /> },
   { key: "commands", label: "Comandos", icon: <TerminalIcon /> },
   { key: "groups", label: "Grupos Permitidos", icon: <GroupsIcon /> },
+  { key: "pairing", label: "Pareamento", icon: <QrCode2Icon /> },
 ];
 
 const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic-bezier(0.4, 0, 0.2, 1)";

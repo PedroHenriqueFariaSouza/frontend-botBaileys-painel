@@ -5,6 +5,7 @@ import DashboardPage from "./pages/DashboardPage";
 import UsersPage from "./pages/UsersPage";
 import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
+import PairingPage from "./pages/PairingPage";
 
 function App() {
   const [page, setPage] = useState("dashboard");
@@ -18,6 +19,8 @@ function App() {
         return <CommandsPage />;
       case "groups":
         return <GroupsPage />;
+      case "pairing":
+        return <PairingPage />;
       default:
         return <UsersPage />;
     }
