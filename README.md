@@ -2,10 +2,11 @@
 
 Painel administrativo web para operação de múltiplos bots WhatsApp com Supabase, incluindo:
 
-- login administrativo com sessão (magic link)
-- gerenciamento de bots
-- pareamento por QR Code em tempo real via WebSocket
-- visualização de usuários, comandos e grupos permitidos
+- login administrativo por magic link (sem senha)
+- gerenciamento completo de bots: cadastro, remoção, pausa/reativação e visualização de consumidores por bot
+- pareamento por QR Code em tempo real via WebSocket seguro
+- isolamento por `bot_id` em todas as telas (usuários, comandos, grupos)
+- dashboard com KPIs e gráficos multi-bot em tempo real
 
 ## Requisitos
 
@@ -118,31 +119,37 @@ npm run prod
 
 ### Segurança e acesso
 
-- Login por magic link com Supabase Auth
-- Bloqueio das páginas internas quando não há sessão
-- Logout pelo próprio painel
+- Login por magic link com Supabase Auth (sem senha, link expira em 1h)
+- Bloqueio das páginas internas quando não há sessão ativa
+- Logout pelo próprio painel com limpeza de estado
 
 ### Pareamento
 
-- Conexão WebSocket com reconexão automática
-- Recebimento de QR Code em tempo real
-- Mensagens de sucesso e erro do fluxo
-- Envio de token e bot_id na mensagem de autenticação (sem expor na URL)
+- Conexão WebSocket com reconexão automática (até 5 tentativas, intervalo de 2,5s)
+- Token enviado como primeira mensagem após abertura do socket — nunca exposto na URL
+- `bot_id` incluído na mensagem de autenticação para isolamento por instância
+- Detecção automática de mixed-content (HTTPS + `ws://`) com aviso e bloqueio
+- Recebimento e exibição do QR Code em base64 em tempo real
+- Feedback visual de cada estado: idle, conectando, aguardando QR, pareado, erro, reconectando
 
-### Multi-bot
+### Gerenciamento de bots
 
-- Tela para listar bots
-- Cadastro de novo bot
-- Remoção de bot
+- Listagem com status atual (reportado pelo BotManager) e coluna de ativo/pausado
+- Cadastro de novo bot com ID personalizado
+- Remoção de bot com confirmação
+- **Pausar / Reativar bot:** altera `is_active` na tabela `bots`; o BotManager usa esse campo para subir ou encerrar o socket sem remover o registro
+- **Visualizar consumidores:** drawer lateral com a lista de usuários (`users`) vinculados ao bot, incluindo chips de Admin/Banido, LID, `phone_jid` e contagem de comandos
 - Ação direta para abrir pareamento de um bot específico
-- Atualização em tempo real da tabela bots
+- Atualização em tempo real via Supabase Realtime
 
-### Operação diária
+### Operação diária com isolamento por bot
 
-- Dashboard
-- Usuários
-- Comandos
-- Grupos permitidos
+Todas as telas abaixo possuem filtro por `bot_id` para visualização isolada por instância:
+
+- **Dashboard** — KPIs (bots online, usuários, comandos hoje) + 7 gráficos Recharts (status dos bots, usuários por bot, comandos por bot, top comandos, atividade diária, status dos usuários, top usuários)
+- **Usuários** — tabela de consumidores com filtro por bot e busca por LID, nome ou telefone
+- **Comandos** — log de `user_commands` com filtro por bot e busca por comando ou usuário
+- **Grupos Permitidos** — CRUD de `user_allowed_groups` com filtro por bot
 
 ## Estrutura Principal
 
@@ -222,14 +229,16 @@ raiz/
 
 ## Banco de Dados Utilizado pelo Frontend
 
-Tabelas consumidas:
+### Tabelas consumidas
 
-- bots
-- users
-- user_commands
-- user_allowed_groups
+| Tabela | Uso |
+|---|---|
+| `bots` | Listagem, cadastro, remoção, toggle `is_active`, pareamento |
+| `users` | Consumidores por bot; exibidos no drawer de BotsPage e na UsersPage |
+| `user_commands` | Log de comandos exibido em CommandsPage |
+| `user_allowed_groups` | Grupos permitidos por usuário/bot em GroupsPage |
 
-Modelagem e contexto geral: [modelagemBancoBotWhatsapp.md](modelagemBancoBotWhatsapp.md)
+Modelagem completa e contexto multi-bot: [modelagemBancoBotWhatsapp.md](modelagemBancoBotWhatsapp.md)
 
 ## Troubleshooting Rápido
 
@@ -241,14 +250,24 @@ Modelagem e contexto geral: [modelagemBancoBotWhatsapp.md](modelagemBancoBotWhat
 
 ### Painel abre, mas bots não atualizam em tempo real
 
-- Verifique se Realtime está habilitado para a tabela bots.
-- Confirme que há eventos de update/insert/delete sendo disparados no banco.
+- Verifique se Realtime está habilitado para a tabela `bots` no Supabase.
+- Confirme que eventos de update/insert/delete estão sendo disparados no banco.
 
 ### Erro no pareamento via WebSocket
 
-- Confirme valor correto de VITE_PAIR_WS_URL.
-- Se frontend está em HTTPS, garanta endpoint em wss.
-- Verifique token e validação no backend do bot.
+- Confirme valor correto de `VITE_PAIR_WS_URL`.
+- Se o frontend está em HTTPS, o endpoint deve usar `wss://` (mixed-content bloqueado pelo navegador).
+- Verifique se o token bate com o `PAIR_TOKEN` configurado no núcleo do bot.
+
+### Bot aparece como "Ativo" mas não responde mensagens
+
+- Verifique se `is_active = true` na tabela `bots`.
+- Confirme que o BotManager do núcleo está rodando e leu o estado mais recente do banco.
+
+### Filtro por bot não mostra registros
+
+- Confirme que os registros em `users`, `user_commands` e `user_allowed_groups` têm o campo `bot_id` preenchido.
+- O valor no filtro deve coincidir exatamente com o `id` da tabela `bots`.
 
 ## Detalhamentos Técnicos
 
