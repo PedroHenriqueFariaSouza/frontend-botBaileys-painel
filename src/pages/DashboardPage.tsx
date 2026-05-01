@@ -225,6 +225,9 @@ export default function DashboardPage() {
     const adminUsers = allUsers.filter((u) => u.is_admin).length;
     const totalCommands = allCommands.length;
 
+    const scopedBannedUsers = scopedUsers.filter((u) => u.is_banned).length;
+    const scopedAdminUsers = scopedUsers.filter((u) => u.is_admin).length;
+
     const today = new Date().toISOString().slice(0, 10);
     const activeToday = allUsers.filter((u) => u.last_command_at?.slice(0, 10) === today).length;
     const newToday = allUsers.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
@@ -321,9 +324,9 @@ export default function DashboardPage() {
     ).length;
     setUserStatus([
       { name: "Ativos", value: active },
-      { name: "Banidos", value: bannedUsers },
+      { name: "Banidos", value: scopedBannedUsers },
       { name: "Mutados", value: muted },
-      { name: "Administradores", value: adminUsers },
+      { name: "Administradores", value: scopedAdminUsers },
     ].filter((s) => s.value > 0));
 
     // --- Top 10 Users by command_count ---
