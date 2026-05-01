@@ -18,6 +18,7 @@ import GroupsIcon from "@mui/icons-material/Groups";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
 
+// Largura fixa do menu lateral em pixels — usada também em App.tsx para o offset do conteúdo
 const DRAWER_WIDTH = 260;
 
 interface SidebarProps {
@@ -27,6 +28,7 @@ interface SidebarProps {
   onNavigate: (page: string) => void;
 }
 
+// Itens de navegação — a propriedade `key` deve coincidir com os cases em App.renderPage()
 const menuItems = [
   { key: "dashboard", label: "Dashboard", icon: <DashboardIcon /> },
   { key: "users", label: "Usuários", icon: <PeopleIcon /> },
@@ -36,6 +38,7 @@ const menuItems = [
   { key: "bots", label: "Gerenciar Bots", icon: <SmartToyIcon /> },
 ];
 
+// Transição suave ao abrir/fechar o menu — sincronizada com o padding do conteúdo em App.tsx
 const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic-bezier(0.4, 0, 0.2, 1)";
 
 export default function Sidebar({ open, onToggle, currentPage, onNavigate }: SidebarProps) {

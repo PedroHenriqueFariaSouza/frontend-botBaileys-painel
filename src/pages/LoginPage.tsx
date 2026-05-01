@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // Dispara o magic link via Supabase Auth OTP — sem senha, link expira em 1h
   async function handleMagicLink() {
     const cleanEmail = email.trim();
     if (!cleanEmail) return;
@@ -27,6 +28,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithOtp({
       email: cleanEmail,
       options: {
+        // Redireciona de volta para este painel após o clique no link do email
         emailRedirectTo: window.location.origin,
       },
     });

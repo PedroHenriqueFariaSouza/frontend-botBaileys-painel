@@ -73,7 +73,9 @@ interface BotMetric {
   commands?: number;
 }
 
+// Cores para o gráfico de pizza de status dos usuários (Ativo, Banido, Mutado, Admin)
 const PIE_COLORS = ["#4caf50", "#f44336", "#ff9800", "#2196f3"];
+// Cores para o gráfico de pizza de status dos bots (active, pairing, connecting, error, outros)
 const BOT_STATUS_COLORS = ["#4caf50", "#ff9800", "#42a5f5", "#f44336", "#9e9e9e"];
 
 export default function DashboardPage() {
@@ -81,6 +83,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Dados brutos guardados apenas para futura funcionalidade de refresh/realtime;
+  // os gráficos consomem os estados derivados abaixo (kpis, topCommands, etc.)
   const [, setBots] = useState<Bot[]>([]);
   const [, setUsers] = useState<User[]>([]);
   const [, setCommands] = useState<UserCommand[]>([]);
@@ -99,6 +103,7 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
+  // Busca as 3 tabelas em paralelo e delega o processamento para processData()
   async function fetchData() {
     setLoading(true);
     try {
@@ -127,6 +132,7 @@ export default function DashboardPage() {
     }
   }
 
+  // Transforma os dados brutos em todas as estruturas consumidas pelos gráficos
   function processData(botsData: Bot[], usersData: User[], commandsData: UserCommand[]) {
     // --- KPIs ---
     const totalBots = botsData.length;

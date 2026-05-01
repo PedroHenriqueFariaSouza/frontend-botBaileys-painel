@@ -21,7 +21,11 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  FormControl,
   FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Select,
   Switch,
   Snackbar,
 } from "@mui/material";
@@ -30,13 +34,17 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import { supabase } from "../lib/supabase";
-import type { User } from "../types/database";
+import type { Bot, User } from "../types/database";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  // Lista de bots usada para popular o dropdown de filtro
+  const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // bot_id selecionado no dropdown; string vazia = sem filtro (todos os bots)
+  const [botFilter, setBotFilter] = useState("");
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
@@ -58,15 +66,20 @@ export default function UsersPage() {
 
   async function fetchUsers() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("users")
-      .select("*")
-      .order("first_seen_at", { ascending: false });
+    // Busca usuários e bots em paralelo para não fazer duas roundtrips sequenciais
+    const [usersRes, botsRes] = await Promise.all([
+      supabase.from("users").select("*").order("first_seen_at", { ascending: false }),
+      // Só o campo id é necessário para popular o dropdown de filtro
+      supabase.from("bots").select("id").order("id"),
+    ]);
 
-    if (error) {
-      setError(error.message);
+    if (usersRes.error) {
+      setError(usersRes.error.message);
     } else {
-      setUsers(data ?? []);
+      setUsers(usersRes.data ?? []);
+    }
+    if (!botsRes.error && botsRes.data) {
+      setBots(botsRes.data as Bot[]);
     }
     setLoading(false);
   }
@@ -151,11 +164,14 @@ export default function UsersPage() {
     }
   }
 
+  // Filtragem local: aplica primeiro o escopo de bot (se selecionado) e depois a busca por texto
+  // Manter client-side evita queries extras no Supabase a cada keystroke
   const filtered = users.filter(
     (u) =>
-      u.lid.includes(search) ||
-      u.push_name?.toLowerCase().includes(search.toLowerCase()) ||
-      u.phone_jid?.includes(search)
+      (botFilter === "" || u.bot_id === botFilter) &&
+      (u.lid.includes(search) ||
+        u.push_name?.toLowerCase().includes(search.toLowerCase()) ||
+        u.phone_jid?.includes(search))
   );
 
   if (loading) {
@@ -181,22 +197,41 @@ export default function UsersPage() {
         </Button>
       </Box>
 
-      <TextField
-        size="small"
-        placeholder="Buscar por LID, nome ou telefone..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        sx={{ mb: 2, width: 360 }}
-        slotProps={{
-          input: {
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          },
-        }}
-      />
+      <Box sx={{ display: "flex", gap: 2, mb: 2, alignItems: "center", flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          placeholder="Buscar por LID, nome ou telefone..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ width: 320 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        {/* Dropdown de filtro por bot_id — isolamento visual por instância (roadmap 5.1) */}
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Bot</InputLabel>
+          <Select
+            value={botFilter}
+            label="Bot"
+            onChange={(e) => setBotFilter(e.target.value)}
+          >
+            {/* Opção padrão: exibe registros de todos os bots */}
+            <MenuItem value="">Todos os bots</MenuItem>
+            {bots.map((b) => (
+              <MenuItem key={b.id} value={b.id}>
+                {b.id}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
 
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">

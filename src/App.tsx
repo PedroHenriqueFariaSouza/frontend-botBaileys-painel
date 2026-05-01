@@ -13,12 +13,15 @@ import { supabase } from "./lib/supabase";
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
+  // true enquanto a sessão ainda não foi verificada — evita piscar a tela de login
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Propagado para PairingPage quando o usuário clica em "Parear" em BotsPage
   const [selectedBotId, setSelectedBotId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
+    // Guard para evitar setState em componente desmontado durante leitura assíncrona
     let mounted = true;
 
     void supabase.auth.getSession().then(({ data }) => {
@@ -46,6 +49,7 @@ function App() {
     setPage(p);
   }
 
+  // Chamado por BotsPage ao clicar em "Parear": pré-preenche o bot_id na PairingPage
   function handlePairBot(botId: string) {
     setSelectedBotId(botId);
     setPage("pairing");

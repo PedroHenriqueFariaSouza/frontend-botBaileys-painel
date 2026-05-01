@@ -69,8 +69,12 @@ export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
   }, [botIdProp]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  // Ref do timer de reconexão — precisa ser cancelável antes de cada nova tentativa
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Espelha retryCount como ref para ser lido dentro de closures do WebSocket sem stale closure
   const retryCountRef = useRef(0);
+  // Flag que indica se o pareamento está "ativo"; usar ref (não state) evita re-renders
+  // e garante leitura síncrona correta dentro dos handlers onclose/onerror
   const activeRef = useRef(false);
 
   const clearRetryTimer = () => {
@@ -210,6 +214,7 @@ export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
     };
   }, [closeWs]);
 
+  // Desabilita campos e o botão cancelar durante qualquer fase de conexão ativa
   const isConnecting =
     status === "connecting" ||
     status === "waiting_qr" ||

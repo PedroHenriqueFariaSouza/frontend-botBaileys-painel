@@ -21,18 +21,26 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "../lib/supabase";
-import type { UserCommand, User } from "../types/database";
+import type { Bot, UserCommand, User } from "../types/database";
 
 export default function CommandsPage() {
   const [commands, setCommands] = useState<UserCommand[]>([]);
   const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
+  // Lista de bots usada para popular o dropdown de filtro
+  const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // bot_id selecionado no dropdown; string vazia = sem filtro (todos os bots)
+  const [botFilter, setBotFilter] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<UserCommand | null>(null);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" }>({
     open: false,
@@ -42,7 +50,8 @@ export default function CommandsPage() {
 
   async function fetchCommands() {
     setLoading(true);
-    const [cmdsRes, usersRes] = await Promise.all([
+    // Três queries em paralelo: comandos, mapa de nomes e lista de bots para o filtro
+    const [cmdsRes, usersRes, botsRes] = await Promise.all([
       supabase
         .from("user_commands")
         .select("*")
@@ -51,6 +60,8 @@ export default function CommandsPage() {
       supabase
         .from("users")
         .select("lid, push_name"),
+      // Só o campo id é necessário para popular o dropdown de filtro
+      supabase.from("bots").select("id").order("id"),
     ]);
 
     if (cmdsRes.error) {
@@ -60,11 +71,16 @@ export default function CommandsPage() {
     }
 
     if (!usersRes.error && usersRes.data) {
+      // Monta um Map<lid, push_name> para resolver nomes sem query extra por linha
       const map = new Map<string, string>();
       (usersRes.data as Pick<User, "lid" | "push_name">[]).forEach((u) => {
         if (u.push_name) map.set(u.lid, u.push_name);
       });
       setUserMap(map);
+    }
+
+    if (!botsRes.error && botsRes.data) {
+      setBots(botsRes.data as Bot[]);
     }
 
     setLoading(false);
@@ -87,11 +103,13 @@ export default function CommandsPage() {
     }
   }
 
+  // Filtragem local: escopo de bot primeiro, depois busca por texto
   const filtered = commands.filter(
     (c) =>
-      c.lid.includes(search) ||
-      c.command.toLowerCase().includes(search.toLowerCase()) ||
-      (userMap.get(c.lid) ?? "").toLowerCase().includes(search.toLowerCase())
+      (botFilter === "" || c.bot_id === botFilter) &&
+      (c.lid.includes(search) ||
+        c.command.toLowerCase().includes(search.toLowerCase()) ||
+        (userMap.get(c.lid) ?? "").toLowerCase().includes(search.toLowerCase()))
   );
 
   if (loading) {
@@ -112,22 +130,41 @@ export default function CommandsPage() {
         Log de Comandos ({filtered.length})
       </Typography>
 
-      <TextField
-        size="small"
-        placeholder="Buscar por LID, nome ou comando..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        sx={{ mb: 2, width: 360 }}
-        slotProps={{
-          input: {
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          },
-        }}
-      />
+      <Box sx={{ display: "flex", gap: 2, mb: 2, alignItems: "center", flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          placeholder="Buscar por LID, nome ou comando..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ width: 320 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        {/* Dropdown de filtro por bot_id — isolamento visual por instância (roadmap 5.1) */}
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Bot</InputLabel>
+          <Select
+            value={botFilter}
+            label="Bot"
+            onChange={(e) => setBotFilter(e.target.value)}
+          >
+            {/* Opção padrão: exibe registros de todos os bots */}
+            <MenuItem value="">Todos os bots</MenuItem>
+            {bots.map((b) => (
+              <MenuItem key={b.id} value={b.id}>
+                {b.id}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
 
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">

@@ -21,6 +21,10 @@ import {
   DialogContentText,
   DialogActions,
   Button,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
   Tooltip,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
@@ -28,13 +32,17 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { supabase } from "../lib/supabase";
-import type { UserAllowedGroup } from "../types/database";
+import type { Bot, UserAllowedGroup } from "../types/database";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<UserAllowedGroup[]>([]);
+  // Lista de bots usada para popular o dropdown de filtro
+  const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // bot_id selecionado no dropdown; string vazia = sem filtro (todos os bots)
+  const [botFilter, setBotFilter] = useState("");
 
   // Add dialog
   const [addOpen, setAddOpen] = useState(false);
@@ -53,15 +61,20 @@ export default function GroupsPage() {
 
   async function fetchGroups() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("user_allowed_groups")
-      .select("*")
-      .order("created_at", { ascending: false });
+    // Busca grupos e bots em paralelo para não fazer duas roundtrips sequenciais
+    const [groupsRes, botsRes] = await Promise.all([
+      supabase.from("user_allowed_groups").select("*").order("created_at", { ascending: false }),
+      // Só o campo id é necessário para popular o dropdown de filtro
+      supabase.from("bots").select("id").order("id"),
+    ]);
 
-    if (error) {
-      setError(error.message);
+    if (groupsRes.error) {
+      setError(groupsRes.error.message);
     } else {
-      setGroups(data ?? []);
+      setGroups(groupsRes.data ?? []);
+    }
+    if (!botsRes.error && botsRes.data) {
+      setBots(botsRes.data as Bot[]);
     }
     setLoading(false);
   }
@@ -105,8 +118,11 @@ export default function GroupsPage() {
     }
   }
 
+  // Filtragem local: escopo de bot primeiro, depois busca por texto
   const filtered = groups.filter(
-    (g) => g.lid.includes(search) || g.group_id.includes(search)
+    (g) =>
+      (botFilter === "" || g.bot_id === botFilter) &&
+      (g.lid.includes(search) || g.group_id.includes(search))
   );
 
   if (loading) {
@@ -134,22 +150,41 @@ export default function GroupsPage() {
         </Button>
       </Box>
 
-      <TextField
-        size="small"
-        placeholder="Buscar por LID ou ID do grupo..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        sx={{ mb: 2, width: 360 }}
-        slotProps={{
-          input: {
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          },
-        }}
-      />
+      <Box sx={{ display: "flex", gap: 2, mb: 2, alignItems: "center", flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          placeholder="Buscar por LID ou ID do grupo..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ width: 320 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        {/* Dropdown de filtro por bot_id — isolamento visual por instância (roadmap 5.1) */}
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Bot</InputLabel>
+          <Select
+            value={botFilter}
+            label="Bot"
+            onChange={(e) => setBotFilter(e.target.value)}
+          >
+            {/* Opção padrão: exibe registros de todos os bots */}
+            <MenuItem value="">Todos os bots</MenuItem>
+            {bots.map((b) => (
+              <MenuItem key={b.id} value={b.id}>
+                {b.id}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
 
       <TableContainer component={Paper} variant="outlined">
         <Table size="small">
