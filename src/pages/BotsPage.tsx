@@ -266,12 +266,12 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
           <Table>
             <TableHead>
               <TableRow>
+                <TableCell><strong>Ações</strong></TableCell>
                 <TableCell><strong>Bot ID</strong></TableCell>
                 <TableCell><strong>Ativo</strong></TableCell>
                 <TableCell><strong>Status</strong></TableCell>
                 <TableCell><strong>Criado em</strong></TableCell>
                 <TableCell><strong>Atualizado em</strong></TableCell>
-                <TableCell align="right"><strong>Ações</strong></TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -284,21 +284,7 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
               ) : (
                 bots.map((bot) => (
                   <TableRow key={bot.id} hover>
-                    <TableCell sx={{ fontFamily: "monospace", fontWeight: 600 }}>
-                      {bot.id}
-                    </TableCell>
-                    {/* Coluna is_active: mostra se o BotManager deve ou não subir o socket deste bot */}
                     <TableCell>
-                      {bot.is_active === false ? (
-                        <Chip label="Pausado" color="default" size="small" />
-                      ) : (
-                        <Chip label="Ativo" color="success" size="small" />
-                      )}
-                    </TableCell>
-                    <TableCell>{statusChip(bot.status)}</TableCell>
-                    <TableCell>{formatDate(bot.created_at)}</TableCell>
-                    <TableCell>{formatDate(bot.updated_at)}</TableCell>
-                    <TableCell align="right">
                       {/* Abre o Drawer lateral com os consumers (users) deste bot */}
                       <Tooltip title="Ver usuários vinculados">
                         <IconButton
@@ -345,6 +331,20 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
                         </IconButton>
                       </Tooltip>
                     </TableCell>
+                    <TableCell sx={{ fontFamily: "monospace", fontWeight: 600 }}>
+                      {bot.id}
+                    </TableCell>
+                    {/* Coluna is_active: mostra se o BotManager deve ou não subir o socket deste bot */}
+                    <TableCell>
+                      {bot.is_active === false ? (
+                        <Chip label="Pausado" color="default" size="small" />
+                      ) : (
+                        <Chip label="Ativo" color="success" size="small" />
+                      )}
+                    </TableCell>
+                    <TableCell>{statusChip(bot.status)}</TableCell>
+                    <TableCell>{formatDate(bot.created_at)}</TableCell>
+                    <TableCell>{formatDate(bot.updated_at)}</TableCell>
                   </TableRow>
                 ))
               )}
