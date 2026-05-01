@@ -32,6 +32,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 import type { Bot, UserAllowedGroup } from "../types/database";
 
 export default function GroupsPage() {
@@ -69,7 +70,7 @@ export default function GroupsPage() {
     ]);
 
     if (groupsRes.error) {
-      setError(groupsRes.error.message);
+      setError(formatUiErrorMessage("carregar os grupos permitidos", groupsRes.error.message));
     } else {
       setGroups(groupsRes.data ?? []);
     }
@@ -95,7 +96,7 @@ export default function GroupsPage() {
     setAddSaving(false);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao adicionar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o grupo permitido", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Grupo adicionado com sucesso!", severity: "success" });
       setAddOpen(false);
@@ -111,7 +112,7 @@ export default function GroupsPage() {
     setDeleteTarget(null);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao deletar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("remover o vínculo de grupo", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Vínculo removido!", severity: "success" });
       fetchGroups();
@@ -135,7 +136,7 @@ export default function GroupsPage() {
 
   if (error) {
     return (
-      <Alert severity="error">Erro ao carregar grupos permitidos: {error}</Alert>
+      <Alert severity="error">{error}</Alert>
     );
   }
 

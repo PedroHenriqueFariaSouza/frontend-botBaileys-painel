@@ -9,6 +9,7 @@ import {
   Typography,
 } from "@mui/material";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -36,7 +37,7 @@ export default function LoginPage() {
     setSubmitting(false);
 
     if (error) {
-      setErrorMsg(error.message);
+      setErrorMsg(formatUiErrorMessage("enviar o link de acesso", error.message));
       return;
     }
 

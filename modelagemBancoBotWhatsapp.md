@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS bots (
   id TEXT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   status VARCHAR(30) NOT NULL DEFAULT 'inactive',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   phone_jid VARCHAR(50),
   description TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -229,15 +230,26 @@ CREATE TABLE IF NOT EXISTS bots (
   id TEXT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   status VARCHAR(30) NOT NULL DEFAULT 'inactive',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   phone_jid VARCHAR(50),
   description TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 1.1 Garantir a coluna usada para pausar/reativar bots sem perder dados antigos
+ALTER TABLE bots ADD COLUMN IF NOT EXISTS is_active BOOLEAN;
+
+UPDATE bots
+SET is_active = TRUE
+WHERE is_active IS NULL;
+
+ALTER TABLE bots ALTER COLUMN is_active SET DEFAULT TRUE;
+ALTER TABLE bots ALTER COLUMN is_active SET NOT NULL;
+
 -- 2. Garantir bot default
-INSERT INTO bots (id, name, status)
-VALUES ('default', 'Bot Default', 'inactive')
+INSERT INTO bots (id, name, status, is_active)
+VALUES ('default', 'Bot Default', 'inactive', TRUE)
 ON CONFLICT (id) DO NOTHING;
 
 -- 3. Expandir tabela users antiga
@@ -427,6 +439,7 @@ Cada registro representa uma instância real de bot WhatsApp.
 | `id` | `TEXT` | Identificador estável do bot. Ex: `default`, `cliente-a`, `suporte` |
 | `name` | `VARCHAR(100)` | Nome amigável da instância |
 | `status` | `VARCHAR(30)` | Estado operacional da instância (`inactive`, `pairing`, `ready`, `active`, `disconnected`) |
+| `is_active` | `BOOLEAN` | Controle administrativo para pausar ou reativar a instância sem deletar o registro |
 | `phone_jid` | `VARCHAR(50)` | JID/número da instância quando conhecido |
 | `description` | `TEXT` | Campo opcional de documentação/admin |
 | `created_at` | `TIMESTAMPTZ` | Quando o bot foi provisionado |

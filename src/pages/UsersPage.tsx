@@ -34,6 +34,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 import type { Bot, User } from "../types/database";
 
 export default function UsersPage() {
@@ -74,7 +75,7 @@ export default function UsersPage() {
     ]);
 
     if (usersRes.error) {
-      setError(usersRes.error.message);
+      setError(formatUiErrorMessage("carregar os usuários", usersRes.error.message));
     } else {
       setUsers(usersRes.data ?? []);
     }
@@ -115,7 +116,7 @@ export default function UsersPage() {
     setSaving(false);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao salvar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("salvar o usuário", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Usuário atualizado com sucesso!", severity: "success" });
       setEditOpen(false);
@@ -129,7 +130,7 @@ export default function UsersPage() {
     setDeleteTarget(null);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao deletar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("remover o usuário", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Usuário removido! Ao interagir com o bot, um novo registro será criado.", severity: "success" });
       fetchUsers();
@@ -155,7 +156,7 @@ export default function UsersPage() {
     setAddSaving(false);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao adicionar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o usuário", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Usuário adicionado com sucesso!", severity: "success" });
       setAddOpen(false);
@@ -183,7 +184,7 @@ export default function UsersPage() {
   }
 
   if (error) {
-    return <Alert severity="error">Erro ao carregar usuários: {error}</Alert>;
+    return <Alert severity="error">{error}</Alert>;
   }
 
   return (

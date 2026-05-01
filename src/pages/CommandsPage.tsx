@@ -29,6 +29,7 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 import type { Bot, UserCommand, User } from "../types/database";
 
 export default function CommandsPage() {
@@ -65,7 +66,7 @@ export default function CommandsPage() {
     ]);
 
     if (cmdsRes.error) {
-      setError(cmdsRes.error.message);
+      setError(formatUiErrorMessage("carregar os comandos", cmdsRes.error.message));
     } else {
       setCommands(cmdsRes.data ?? []);
     }
@@ -96,7 +97,7 @@ export default function CommandsPage() {
     setDeleteTarget(null);
 
     if (error) {
-      setSnackbar({ open: true, message: `Erro ao deletar: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("remover o comando do log", error.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Comando removido do log!", severity: "success" });
       fetchCommands();
@@ -121,7 +122,7 @@ export default function CommandsPage() {
   }
 
   if (error) {
-    return <Alert severity="error">Erro ao carregar comandos: {error}</Alert>;
+    return <Alert severity="error">{error}</Alert>;
   }
 
   return (

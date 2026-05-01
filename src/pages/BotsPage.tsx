@@ -35,6 +35,7 @@ import PeopleIcon from "@mui/icons-material/People";
 import PlayCircleIcon from "@mui/icons-material/PlayCircle";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 import type { Bot, User } from "../types/database";
 
 interface BotsPageProps {
@@ -106,7 +107,7 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
       .order("created_at", { ascending: false });
     if (!silent) setLoading(false);
     if (error) {
-      setError(error.message);
+      setError(formatUiErrorMessage("carregar os bots", error.message));
       return;
     }
     setBots((data as Bot[]) ?? []);
@@ -139,10 +140,10 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
     setAddSaving(true);
     const { error } = await supabase
       .from("bots")
-      .insert({ id, status: "disconnected" });
+      .insert({ id, name: id, status: "disconnected" });
     setAddSaving(false);
     if (error) {
-      setSnackbar({ open: true, message: `Erro: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("criar o bot", error.message), severity: "error" });
       return;
     }
     setSnackbar({ open: true, message: `Bot "${id}" criado com sucesso.`, severity: "success" });
@@ -160,7 +161,7 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
       .eq("id", deleteTarget.id);
     setDeleting(false);
     if (error) {
-      setSnackbar({ open: true, message: `Erro: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("remover o bot", error.message), severity: "error" });
       setDeleteTarget(null);
       return;
     }
@@ -188,8 +189,13 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
       .eq("id", toggleTarget.id);
     setToggling(false);
     if (error) {
-      setSnackbar({ open: true, message: `Erro: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("alterar o status do bot", error.message), severity: "error" });
     } else {
+      setBots((currentBots) =>
+        currentBots.map((bot) =>
+          bot.id === toggleTarget.id ? { ...bot, is_active: newActive } : bot
+        )
+      );
       setSnackbar({
         open: true,
         message: `Bot "${toggleTarget.id}" ${newActive ? "reativado" : "pausado"}.`,
@@ -214,7 +220,7 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
       .order("first_seen_at", { ascending: false });
     if (error) {
       setUsersDrawer((prev) => ({ ...prev, loading: false }));
-      setSnackbar({ open: true, message: `Erro ao carregar usuários: ${error.message}`, severity: "error" });
+      setSnackbar({ open: true, message: formatUiErrorMessage("carregar os usuários do bot", error.message), severity: "error" });
       return;
     }
     // Substitui o spinner pela lista de usuários retornada

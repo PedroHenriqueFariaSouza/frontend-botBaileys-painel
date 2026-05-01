@@ -38,6 +38,7 @@ import {
   Legend,
 } from "recharts";
 import { supabase } from "../lib/supabase";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 import type { Bot, User, UserCommand } from "../types/database";
 
 interface KPI {
@@ -182,7 +183,7 @@ export default function DashboardPage() {
       setUsers(usersData);
       setCommands(commandsData);
     } catch (err: any) {
-      setError(err.message ?? "Erro ao carregar dados");
+      setError(formatUiErrorMessage("carregar os dados do painel", err?.message));
     } finally {
       setLoading(false);
     }
@@ -365,7 +366,7 @@ export default function DashboardPage() {
   }
 
   if (error) {
-    return <Alert severity="error">Erro ao carregar dashboard: {error}</Alert>;
+    return <Alert severity="error">{error}</Alert>;
   }
 
   return (

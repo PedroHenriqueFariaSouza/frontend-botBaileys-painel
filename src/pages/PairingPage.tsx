@@ -17,6 +17,7 @@ import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import WifiOffIcon from "@mui/icons-material/WifiOff";
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
+import { formatUiErrorMessage } from "../lib/uiError.ts";
 
 type WsStatus =
   | "idle"
@@ -141,7 +142,7 @@ export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
           activeRef.current = false;
           closeWs();
         } else if (msg.type === "error") {
-          setErrorMsg(msg.message ?? "Erro desconhecido durante o pareamento.");
+          setErrorMsg(formatUiErrorMessage("concluir o pareamento", msg.message));
           setStatus("error");
           activeRef.current = false;
           closeWs();
@@ -257,8 +258,8 @@ export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
             error={hasMixedContent}
             helperText={
               hasMixedContent
-                ? "⚠️ Mixed-content: página em HTTPS mas URL usa ws://. Troque para wss://."
-                : "Em produção use wss:// (WebSocket Secure)"
+                ? "⚠️ Conteúdo misto: a página está em HTTPS, mas a URL usa ws://. Troque para wss://."
+                : "Em produção, use wss:// (WebSocket seguro)."
             }
             InputProps={{
               endAdornment: (
@@ -280,7 +281,7 @@ export default function PairingPage({ botId: botIdProp }: PairingPageProps) {
           />
           {hasMixedContent && (
             <Alert severity="error" sx={{ py: 0.5 }}>
-              <strong>Mixed-content bloqueado pelo navegador.</strong> A página está em
+              <strong>Conteúdo misto bloqueado pelo navegador.</strong> A página está em
               HTTPS mas o WebSocket usa <code>ws://</code>. O navegador irá bloquear a
               conexão. Altere para <code>wss://</code> ou sirva o frontend em HTTP.
             </Alert>
