@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -6,6 +6,11 @@ import {
   CircularProgress,
   Alert,
   Grid,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
+  type SelectChangeEvent,
   useTheme,
   alpha,
 } from "@mui/material";
@@ -73,21 +78,50 @@ interface BotMetric {
   commands?: number;
 }
 
+type BotScope = "all" | string;
+
 // Cores para o gráfico de pizza de status dos usuários (Ativo, Banido, Mutado, Admin)
 const PIE_COLORS = ["#4caf50", "#f44336", "#ff9800", "#2196f3"];
 // Cores para o gráfico de pizza de status dos bots (active, pairing, connecting, error, outros)
 const BOT_STATUS_COLORS = ["#4caf50", "#ff9800", "#42a5f5", "#f44336", "#9e9e9e"];
 
+// Normaliza variações de status vindas do backend.
+function normalizeBotStatus(status: string | null | undefined) {
+  const normalized = (status ?? "desconhecido").toLowerCase();
+  return normalized === "inactive" ? "disconnected" : normalized;
+}
+
+// Traduz os status dos bots para rótulos da UI.
+function translateBotStatus(status: string) {
+  switch (status) {
+    case "active":
+      return "Ativo";
+    case "ready":
+      return "Pronto";
+    case "pairing":
+      return "Pareando";
+    case "connecting":
+      return "Conectando";
+    case "disconnected":
+      return "Desconectado";
+    case "error":
+      return "Erro";
+    default:
+      return "Desconhecido";
+  }
+}
+
 export default function DashboardPage() {
   const theme = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedBotId, setSelectedBotId] = useState<BotScope>("all");
+  const isAllBotsScope = selectedBotId === "all";
 
-  // Dados brutos guardados apenas para futura funcionalidade de refresh/realtime;
-  // os gráficos consomem os estados derivados abaixo (kpis, topCommands, etc.)
-  const [, setBots] = useState<Bot[]>([]);
-  const [, setUsers] = useState<User[]>([]);
-  const [, setCommands] = useState<UserCommand[]>([]);
+  // Dados brutos usados para recalcular todos os gráficos quando o filtro muda.
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [commands, setCommands] = useState<UserCommand[]>([]);
 
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [topCommands, setTopCommands] = useState<CommandCount[]>([]);
@@ -103,7 +137,30 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
-  // Busca as 3 tabelas em paralelo e delega o processamento para processData()
+  useEffect(() => {
+    processData(bots, users, commands, selectedBotId);
+  }, [bots, users, commands, selectedBotId]);
+
+  // Preenche o combo com bots da tabela e bots referenciados em users/commands.
+  const availableBotIds = useMemo(() => {
+    const botSet = new Set<string>();
+
+    bots.forEach((bot) => {
+      if (bot.id) botSet.add(bot.id);
+    });
+
+    users.forEach((user) => {
+      botSet.add(user.bot_id ?? "default");
+    });
+
+    commands.forEach((command) => {
+      botSet.add(command.bot_id ?? "default");
+    });
+
+    return [...botSet].sort();
+  }, [bots, users, commands]);
+
+  // Carrega bots, usuários e comandos em paralelo.
   async function fetchData() {
     setLoading(true);
     try {
@@ -124,7 +181,6 @@ export default function DashboardPage() {
       setBots(botsData);
       setUsers(usersData);
       setCommands(commandsData);
-      processData(botsData, usersData, commandsData);
     } catch (err: any) {
       setError(err.message ?? "Erro ao carregar dados");
     } finally {
@@ -132,24 +188,39 @@ export default function DashboardPage() {
     }
   }
 
-  // Transforma os dados brutos em todas as estruturas consumidas pelos gráficos
-  function processData(botsData: Bot[], usersData: User[], commandsData: UserCommand[]) {
+  // Aplica o escopo do bot selecionado e monta os dados dos gráficos.
+  function processData(
+    botsData: Bot[],
+    usersData: User[],
+    commandsData: UserCommand[],
+    botScope: BotScope
+  ) {
+    const scopedBots = botScope === "all" ? botsData : botsData.filter((bot) => bot.id === botScope);
+    const scopedUsers =
+      botScope === "all"
+        ? usersData
+        : usersData.filter((user) => (user.bot_id ?? "default") === botScope);
+    const scopedCommands =
+      botScope === "all"
+        ? commandsData
+        : commandsData.filter((command) => (command.bot_id ?? "default") === botScope);
+
     // --- KPIs ---
-    const totalBots = botsData.length;
-    const activeBots = botsData.filter((b) => {
-      const status = (b.status ?? "").toLowerCase();
+    const totalBots = scopedBots.length;
+    const activeBots = scopedBots.filter((b) => {
+      const status = normalizeBotStatus(b.status);
       return status === "active" || status === "ready";
     }).length;
-    const pairingBots = botsData.filter((b) => (b.status ?? "").toLowerCase() === "pairing").length;
+    const pairingBots = scopedBots.filter((b) => normalizeBotStatus(b.status) === "pairing").length;
 
-    const totalUsers = usersData.length;
-    const bannedUsers = usersData.filter((u) => u.is_banned).length;
-    const adminUsers = usersData.filter((u) => u.is_admin).length;
-    const totalCommands = commandsData.length;
+    const totalUsers = scopedUsers.length;
+    const bannedUsers = scopedUsers.filter((u) => u.is_banned).length;
+    const adminUsers = scopedUsers.filter((u) => u.is_admin).length;
+    const totalCommands = scopedCommands.length;
 
     const today = new Date().toISOString().slice(0, 10);
-    const activeToday = usersData.filter((u) => u.last_command_at?.slice(0, 10) === today).length;
-    const newToday = usersData.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
+    const activeToday = scopedUsers.filter((u) => u.last_command_at?.slice(0, 10) === today).length;
+    const newToday = scopedUsers.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
 
     setKpis([
       { label: "Bots Cadastrados", value: totalBots, icon: <SmartToyIcon />, color: "#5e35b1" },
@@ -165,21 +236,20 @@ export default function DashboardPage() {
 
     // --- Bot status pie ---
     const botStatusMap = new Map<string, number>();
-    botsData.forEach((bot) => {
-      const statusRaw = (bot.status ?? "desconhecido").toLowerCase();
-      const normalized = statusRaw === "inactive" ? "disconnected" : statusRaw;
+    scopedBots.forEach((bot) => {
+      const normalized = normalizeBotStatus(bot.status);
       botStatusMap.set(normalized, (botStatusMap.get(normalized) ?? 0) + 1);
     });
     setBotStatus(
       [...botStatusMap.entries()].map(([name, value]) => ({
-        name,
+        name: translateBotStatus(name),
         value,
       }))
     );
 
     // --- Users by bot ---
     const usersByBotMap = new Map<string, number>();
-    usersData.forEach((u) => {
+    scopedUsers.forEach((u) => {
       const key = u.bot_id ?? "default";
       usersByBotMap.set(key, (usersByBotMap.get(key) ?? 0) + 1);
     });
@@ -192,7 +262,7 @@ export default function DashboardPage() {
 
     // --- Commands by bot ---
     const commandsByBotMap = new Map<string, number>();
-    commandsData.forEach((c) => {
+    scopedCommands.forEach((c) => {
       const key = c.bot_id ?? "default";
       commandsByBotMap.set(key, (commandsByBotMap.get(key) ?? 0) + 1);
     });
@@ -205,7 +275,7 @@ export default function DashboardPage() {
 
     // --- Top 10 Commands ---
     const cmdMap = new Map<string, number>();
-    commandsData.forEach((c) => {
+    scopedCommands.forEach((c) => {
       cmdMap.set(c.command, (cmdMap.get(c.command) ?? 0) + 1);
     });
     const sortedCmds = [...cmdMap.entries()]
@@ -222,7 +292,7 @@ export default function DashboardPage() {
       d.setDate(d.getDate() - i);
       last30.set(d.toISOString().slice(0, 10), 0);
     }
-    commandsData.forEach((c) => {
+    scopedCommands.forEach((c) => {
       const day = c.used_at.slice(0, 10);
       if (last30.has(day)) {
         last30.set(day, last30.get(day)! + 1);
@@ -236,21 +306,21 @@ export default function DashboardPage() {
     );
 
     // --- User Status Pie ---
-    const active = usersData.filter(
+    const active = scopedUsers.filter(
       (u) => !u.is_banned && !u.muted_until && u.is_admin === false
     ).length;
-    const muted = usersData.filter(
+    const muted = scopedUsers.filter(
       (u) => u.muted_until && new Date(u.muted_until) > new Date()
     ).length;
     setUserStatus([
       { name: "Ativos", value: active },
       { name: "Banidos", value: bannedUsers },
       { name: "Mutados", value: muted },
-      { name: "Admins", value: adminUsers },
+      { name: "Administradores", value: adminUsers },
     ].filter((s) => s.value > 0));
 
     // --- Top 10 Users by command_count ---
-    const sorted = [...usersData]
+    const sorted = [...scopedUsers]
       .sort((a, b) => b.command_count - a.command_count)
       .slice(0, 10);
     setTopUsers(
@@ -267,7 +337,7 @@ export default function DashboardPage() {
       d.setDate(d.getDate() - i);
       newMap.set(d.toISOString().slice(0, 10), 0);
     }
-    usersData.forEach((u) => {
+    scopedUsers.forEach((u) => {
       if (u.first_seen_at) {
         const day = u.first_seen_at.slice(0, 10);
         if (newMap.has(day)) {
@@ -282,6 +352,10 @@ export default function DashboardPage() {
       }))
     );
   }
+  function handleBotScopeChange(event: SelectChangeEvent) {
+    setSelectedBotId(event.target.value);
+  }
+
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", mt: 8 }}>
@@ -296,9 +370,36 @@ export default function DashboardPage() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 3, fontWeight: 600 }}>
-        Dashboard
-      </Typography>
+      <Box
+        sx={{
+          mb: 3,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 2,
+          flexWrap: "wrap",
+        }}
+      >
+        <Typography variant="h5" sx={{ fontWeight: 600 }}>
+          Painel
+        </Typography>
+        <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 280 } }}>
+          <InputLabel id="dashboard-bot-scope-label">Filtrar por bot</InputLabel>
+          <Select
+            labelId="dashboard-bot-scope-label"
+            value={selectedBotId}
+            label="Filtrar por bot"
+            onChange={handleBotScopeChange}
+          >
+            <MenuItem value="all">Todos os bots</MenuItem>
+            {availableBotIds.map((botId) => (
+              <MenuItem key={botId} value={botId}>
+                {botId}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Box>
 
       {/* KPI Cards */}
       <Grid container spacing={2} sx={{ mb: 4 }}>
@@ -341,85 +442,95 @@ export default function DashboardPage() {
         ))}
       </Grid>
 
-      {/* Row 0: Visão Multi-Bot */}
-      <Grid container spacing={3} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
-            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-              Status dos Bots
-            </Typography>
-            <ResponsiveContainer width="100%" height={270}>
-              <PieChart>
-                <Pie
-                  data={botStatus}
-                  cx="50%"
-                  cy="45%"
-                  innerRadius={52}
-                  outerRadius={92}
-                  paddingAngle={3}
-                  dataKey="value"
-                  label={({ name, percent }: { name?: string; percent?: number }) =>
-                    `${name ?? ""} ${((percent ?? 0) * 100).toFixed(0)}%`
-                  }
-                  labelLine={false}
-                >
-                  {botStatus.map((_entry, index) => (
-                    <Cell key={index} fill={BOT_STATUS_COLORS[index % BOT_STATUS_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend verticalAlign="bottom" height={36} />
-              </PieChart>
-            </ResponsiveContainer>
-          </Paper>
-        </Grid>
+      {/* Gráficos comparativos só aparecem quando o escopo é "Todos os bots". */}
+      {isAllBotsScope ? (
+        <Grid container spacing={3} sx={{ mb: 3 }}>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+              <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                Status dos Bots
+              </Typography>
+              <ResponsiveContainer width="100%" height={270}>
+                <PieChart>
+                  <Pie
+                    data={botStatus}
+                    cx="50%"
+                    cy="45%"
+                    innerRadius={52}
+                    outerRadius={92}
+                    paddingAngle={3}
+                    dataKey="value"
+                    label={({ name, percent }: { name?: string; percent?: number }) =>
+                      `${name ?? ""} ${((percent ?? 0) * 100).toFixed(0)}%`
+                    }
+                    labelLine={false}
+                  >
+                    {botStatus.map((_entry, index) => (
+                      <Cell key={index} fill={BOT_STATUS_COLORS[index % BOT_STATUS_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend verticalAlign="bottom" height={36} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Paper>
+          </Grid>
 
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
-            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-              Usuários por Bot (Top 10)
-            </Typography>
-            <ResponsiveContainer width="100%" height={270}>
-              <BarChart data={usersByBot} layout="vertical" margin={{ left: 16 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
-                <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
-                <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: theme.palette.background.paper,
-                    border: `1px solid ${theme.palette.divider}`,
-                    borderRadius: 8,
-                  }}
-                />
-                <Bar dataKey="users" name="Usuários" fill="#42a5f5" radius={[0, 6, 6, 0]} barSize={18} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Paper>
-        </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+              <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                Usuários por Bot (10 maiores)
+              </Typography>
+              <ResponsiveContainer width="100%" height={270}>
+                <BarChart data={usersByBot} layout="vertical" margin={{ left: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
+                  <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
+                  <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: theme.palette.background.paper,
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: 8,
+                    }}
+                  />
+                  <Bar dataKey="users" name="Usuários" fill="#42a5f5" radius={[0, 6, 6, 0]} barSize={18} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Paper>
+          </Grid>
 
-        <Grid size={{ xs: 12, md: 4 }}>
-          <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
-            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-              Comandos por Bot (Top 10)
-            </Typography>
-            <ResponsiveContainer width="100%" height={270}>
-              <BarChart data={commandsByBot} layout="vertical" margin={{ left: 16 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
-                <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
-                <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: theme.palette.background.paper,
-                    border: `1px solid ${theme.palette.divider}`,
-                    borderRadius: 8,
-                  }}
-                />
-                <Bar dataKey="commands" name="Comandos" fill="#7e57c2" radius={[0, 6, 6, 0]} barSize={18} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Paper>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <Paper sx={{ p: 3, borderRadius: 3, height: 360 }}>
+              <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+                Comandos por Bot (10 maiores)
+              </Typography>
+              <ResponsiveContainer width="100%" height={270}>
+                <BarChart data={commandsByBot} layout="vertical" margin={{ left: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={alpha(theme.palette.text.primary, 0.1)} />
+                  <XAxis type="number" fontSize={12} tick={{ fill: theme.palette.text.secondary }} allowDecimals={false} />
+                  <YAxis dataKey="bot" type="category" width={95} fontSize={12} tick={{ fill: theme.palette.text.secondary }} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: theme.palette.background.paper,
+                      border: `1px solid ${theme.palette.divider}`,
+                      borderRadius: 8,
+                    }}
+                  />
+                  <Bar dataKey="commands" name="Comandos" fill="#7e57c2" radius={[0, 6, 6, 0]} barSize={18} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Paper>
+          </Grid>
         </Grid>
-      </Grid>
+      ) : (
+        <Grid container spacing={3} sx={{ mb: 3 }}>
+          <Grid size={{ xs: 12 }}>
+            <Alert severity="info">
+              Visão comparativa entre bots ocultada porque o filtro está em um bot específico ({selectedBotId}).
+            </Alert>
+          </Grid>
+        </Grid>
+      )}
 
       {/* Row 1: Activity + Status */}
       <Grid container spacing={3} sx={{ mb: 3 }}>
@@ -497,7 +608,7 @@ export default function DashboardPage() {
         <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3, borderRadius: 3, height: 400 }}>
             <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-              Top 10 Comandos Mais Usados
+              10 Comandos Mais Usados
             </Typography>
             <ResponsiveContainer width="100%" height={310}>
               <BarChart data={topCommands} layout="vertical" margin={{ left: 20 }}>
@@ -532,7 +643,7 @@ export default function DashboardPage() {
         <Grid size={{ xs: 12, md: 6 }}>
           <Paper sx={{ p: 3, borderRadius: 3, height: 400 }}>
             <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-              Top 10 Usuários (por comandos)
+              10 Usuários com Mais Comandos
             </Typography>
             <ResponsiveContainer width="100%" height={310}>
               <BarChart data={topUsers} layout="vertical" margin={{ left: 30 }}>
