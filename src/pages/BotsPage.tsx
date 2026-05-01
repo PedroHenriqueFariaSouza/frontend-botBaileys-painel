@@ -285,51 +285,53 @@ export default function BotsPage({ onPairBot }: BotsPageProps) {
                 bots.map((bot) => (
                   <TableRow key={bot.id} hover>
                     <TableCell>
-                      {/* Abre o Drawer lateral com os consumers (users) deste bot */}
-                      <Tooltip title="Ver usuários vinculados">
-                        <IconButton
-                          size="small"
-                          color="info"
-                          onClick={() => void handleViewUsers(bot.id)}
-                          sx={{ mr: 0.5 }}
-                        >
-                          <PeopleIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Iniciar pareamento para este bot">
-                        <IconButton
-                          size="small"
-                          color="primary"
-                          onClick={() => onPairBot(bot.id)}
-                          sx={{ mr: 0.5 }}
-                        >
-                          <QrCode2Icon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      {/* Pausa (is_active=false) ou reativa (is_active=true) o bot sem deletá-lo */}
-                      <Tooltip title={bot.is_active === false ? "Reativar bot" : "Pausar bot"}>
-                        <IconButton
-                          size="small"
-                          color={bot.is_active === false ? "success" : "warning"}
-                          onClick={() => setToggleTarget(bot)}
-                          sx={{ mr: 0.5 }}
-                        >
-                          {bot.is_active === false ? (
-                            <PlayCircleIcon fontSize="small" />
-                          ) : (
-                            <PauseCircleIcon fontSize="small" />
-                          )}
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Remover bot">
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => setDeleteTarget(bot)}
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                        {/* Abre o Drawer lateral com os consumers (users) deste bot */}
+                        <Tooltip title="Ver usuários vinculados">
+                          <IconButton
+                            size="small"
+                            color="info"
+                            onClick={() => void handleViewUsers(bot.id)}
+                          >
+                            <PeopleIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Box sx={{ width: "1px", height: 24, bgcolor: "divider" }} />
+                        <Tooltip title="Iniciar pareamento para este bot">
+                          <IconButton
+                            size="small"
+                            color="primary"
+                            onClick={() => onPairBot(bot.id)}
+                          >
+                            <QrCode2Icon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Box sx={{ width: "1px", height: 24, bgcolor: "divider" }} />
+                        {/* Pausa (is_active=false) ou reativa (is_active=true) o bot sem deletá-lo */}
+                        <Tooltip title={bot.is_active === false ? "Reativar bot" : "Pausar bot"}>
+                          <IconButton
+                            size="small"
+                            color={bot.is_active === false ? "success" : "warning"}
+                            onClick={() => setToggleTarget(bot)}
+                          >
+                            {bot.is_active === false ? (
+                              <PlayCircleIcon fontSize="small" />
+                            ) : (
+                              <PauseCircleIcon fontSize="small" />
+                            )}
+                          </IconButton>
+                        </Tooltip>
+                        <Box sx={{ width: "1px", height: 24, bgcolor: "divider" }} />
+                        <Tooltip title="Remover bot">
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => setDeleteTarget(bot)}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
                     </TableCell>
                     <TableCell sx={{ fontFamily: "monospace", fontWeight: 600 }}>
                       {bot.id}
