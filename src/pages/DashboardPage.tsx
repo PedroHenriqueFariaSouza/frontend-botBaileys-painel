@@ -189,13 +189,19 @@ export default function DashboardPage() {
     }
   }
 
-  // Aplica o escopo do bot selecionado e monta os dados dos gráficos.
+  // Mantém KPIs em visão global e aplica escopo apenas nos gráficos.
   function processData(
     botsData: Bot[],
     usersData: User[],
     commandsData: UserCommand[],
     botScope: BotScope
   ) {
+    // KPIs do topo sempre refletem o ambiente completo (todos os bots).
+    const allBots = botsData;
+    const allUsers = usersData;
+    const allCommands = commandsData;
+
+    // Gráficos e listas abaixo respeitam o filtro selecionado no combo.
     const scopedBots = botScope === "all" ? botsData : botsData.filter((bot) => bot.id === botScope);
     const scopedUsers =
       botScope === "all"
@@ -207,21 +213,21 @@ export default function DashboardPage() {
         : commandsData.filter((command) => (command.bot_id ?? "default") === botScope);
 
     // --- KPIs ---
-    const totalBots = scopedBots.length;
-    const activeBots = scopedBots.filter((b) => {
+    const totalBots = allBots.length;
+    const activeBots = allBots.filter((b) => {
       const status = normalizeBotStatus(b.status);
       return status === "active" || status === "ready";
     }).length;
-    const pairingBots = scopedBots.filter((b) => normalizeBotStatus(b.status) === "pairing").length;
+    const pairingBots = allBots.filter((b) => normalizeBotStatus(b.status) === "pairing").length;
 
-    const totalUsers = scopedUsers.length;
-    const bannedUsers = scopedUsers.filter((u) => u.is_banned).length;
-    const adminUsers = scopedUsers.filter((u) => u.is_admin).length;
-    const totalCommands = scopedCommands.length;
+    const totalUsers = allUsers.length;
+    const bannedUsers = allUsers.filter((u) => u.is_banned).length;
+    const adminUsers = allUsers.filter((u) => u.is_admin).length;
+    const totalCommands = allCommands.length;
 
     const today = new Date().toISOString().slice(0, 10);
-    const activeToday = scopedUsers.filter((u) => u.last_command_at?.slice(0, 10) === today).length;
-    const newToday = scopedUsers.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
+    const activeToday = allUsers.filter((u) => u.last_command_at?.slice(0, 10) === today).length;
+    const newToday = allUsers.filter((u) => u.first_seen_at?.slice(0, 10) === today).length;
 
     setKpis([
       { label: "Bots Cadastrados", value: totalBots, icon: <SmartToyIcon />, color: "#5e35b1" },
