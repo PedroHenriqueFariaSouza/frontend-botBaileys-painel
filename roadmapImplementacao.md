@@ -5,6 +5,32 @@
 
 ---
 
+## 🎯 Modelo de Arquitetura Multi-Bot
+
+O sistema diferencia **bots** de **consumidores**:
+
+| Entidade | Onde? | O que é? | Pareamento? |
+|---|---|---|---|
+| **Bot** | Tabela `bots` | Número WhatsApp que **responde** mensagens (sessão ativa do sistema) | ✅ Sim, via QR Code |
+| **Consumer** | Tabela `users` | Usuário comum que **fala com** o bot (whitelist padrão) | ❌ Não, apenas cadastro |
+
+**Fluxo prático:**
+
+1. Você pareía um número WhatsApp como `bot` (escaneando QR Code)
+2. Credenciais vão para `auth_store`, registro vai para `bots` com `id` = identificador interno
+3. O runtime lê a tabela `bots` e sobe um socket para cada número bot ativo
+4. Quando usuários mandam mensagens para esse número, o bot responde isoladamente
+5. Usuários normais (consumidores) ficam em `users`, sem precisar de pareamento
+
+**Exemplos de isolamento:**
+
+- Número bot `5511999999999` responde via socket próprio
+- Número bot `5521888888888` responde via outro socket próprio
+- Usuário normal (consumer) em `users.bot_id='bot-a'` só interage com aquele bot
+- Admin de `bot-a` não enxerga dados de `bot-b`
+
+---
+
 ## Índice
 
 - [Fase 1 — Fundação (MVP)](#fase-1--fundação-mvp)
@@ -31,13 +57,19 @@ Nada a ser feito nesta fase. O frontend ainda não existe.
 
 Esta etapa já foi concluída.
 
-Antes da `auth_store`, a estrutura do banco precisou prever a tabela raiz `bots`, porque o sistema já está sendo desenhado para múltiplos bots/instâncias usando a mesma base de código.
+A estrutura do banco foi desenhada para múltiplos números WhatsApp (bots) coexistirem no mesmo sistema, cada um com sua sessão isolada.
 
 Resultado esperado desta etapa:
 
-- tabela `bots` como entidade central das instâncias
-- tabela `auth_store` ligada a `bots(id)`
-- tabelas operacionais (`users`, `user_commands`, `user_allowed_groups`) também escopadas por `bot_id`
+- tabela `bots` — registros de números WhatsApp pareados (as sessões ativas do sistema)
+  - campos: `id` (identificador único), `status` (inactive/pairing/ready/active/disconnected), `phone_jid` (número + @s.whatsapp.net), `is_active`, `created_at`, `updated_at`
+  - **cada linha = um bot que sobe um socket Baileys**
+- tabela `auth_store` — credenciais + chaves do Signal Protocol de cada bot
+  - ligação: `bot_id` REFERENCES `bots(id)`
+- tabelas operacionais — consumidores, logs e grupos
+  - `users`: consumidores/whitelist escopados por `bot_id`
+  - `user_commands`: logs de comandos por bot
+  - `user_allowed_groups`: grupos permitidos por bot
 
 O SQL e a estratégia de migração para banco novo ou banco já existente estão documentados em [`modelagemBancoBotWhatsapp.md`](./modelagemBancoBotWhatsapp.md).
 
@@ -157,16 +189,46 @@ Regras de inferência do nome do arquivo para `key_type`/`key_id`:
 
 ---
 
-#### 1.5 — Substituir `useMultiFileAuthState` no `src/index.ts`
+#### 1.5 — Criar `BotManager` em `src/index.ts` para múltiplos bots
 
-Esta é a alteração mais simples e ao mesmo tempo a mais importante. É uma única linha que muda:
+Esta é a alteração estrutural mais importante. Em vez de subir um único bot:
 
 ```diff
 - const { state, saveCreds } = await useMultiFileAuthState("auth");
 + const { state, saveCreds } = await useSupabaseAuthState();
+- const sock = makeWASocket({ auth: { ...state, keys: ... } });
 ```
 
-O restante do código de inicialização do bot não precisa mudar — `state` e `saveCreds` têm exatamente a mesma interface.
+Agora o runtime deve:
+
+1. **Consultar no Supabase todos os bots ativos:**
+   ```sql
+   SELECT * FROM bots WHERE is_active = true
+   ```
+
+2. **Para cada bot, criar um socket isolado:**
+   ```ts
+   const bots = await supabase.from('bots').select('*').eq('is_active', true);
+   
+   for (const bot of bots) {
+     const { state, saveCreds } = await useSupabaseAuthState(bot.id);
+     const sock = makeWASocket({ auth: { ...state, keys: ... } });
+     
+     bots_map.set(bot.id, {
+       sock,
+       status: 'connecting',
+       botId: bot.id,
+       // ...
+     });
+   }
+   ```
+
+3. **Manter todos os sockets vivos no mesmo processo:**
+   - Cada socket tem listeners próprios para `connection.update`, `messages.upsert`, etc.
+   - Handler central recebe a mensagem e sabe qual `botId` processá-la
+   - Feature executa escopada por `botId`
+
+**Benefício:** Um número desconecta, os outros seguem respondendo. Sem impacto cruzado.
 
 ---
 
@@ -214,12 +276,6 @@ Após as etapas acima:
 
 > **Objetivo:** Embutir no bot um servidor HTTP/WebSocket que gere o QR Code de pareamento e o envie em tempo real para quem estiver conectado. Esta fase não envolve ainda uma interface bonita — apenas o endpoint funcional.
 
-### [outro repositorio front end manipular] Frontend Web
-
-Nada a ser feito nesta fase ainda. O endpoint ficará disponível, mas o frontend que o consome vem na Fase 3.
-
----
-
 ### Núcleo do Bot
 
 #### 2.1 — Subir servidor HTTP/WebSocket junto com o bot
@@ -243,7 +299,7 @@ WS   /pair/ws     → WebSocket que transmite QR Code e status em tempo real
 
 #### 2.2 — Implementar lógica do socket Baileys temporário
 
-Quando um cliente abre o WebSocket em `/pair/ws`:
+Quando um cliente abre o WebSocket em `/pair/ws` **para parear um novo bot**:
 
 1. Criar uma instância **temporária** do socket Baileys com `printQRInTerminal: false`.
 2. Escutar o evento `connection.update`.
@@ -253,7 +309,9 @@ Quando um cliente abre o WebSocket em `/pair/ws`:
 
 **Importante:** O QR Code expira a cada ~20 segundos. O Baileys emite múltiplos QRs até o scan acontecer. O WebSocket deve repassar cada novo QR ao cliente em tempo real.
 
-**Importante:** O socket temporário de pareamento e o socket principal do bot **nunca devem operar ao mesmo tempo**. O WhatsApp retorna erro 440 (session replaced) se duas instâncias tentarem usar a mesma sessão. A lógica deve garantir que o socket de pareamento só sobe quando o bot principal está desconectado, ou que o bot principal seja pausado durante o pareamento.
+**Importante:** Se um bot já está ativo em `bots_map` (socket rodando em memória), o pareamento **não deve** tentar reusar o mesmo `bot_id`. Deve validar no banco se aquele `bot_id` já tem `status = 'active'` e recusar ou aguardar desconexão.
+
+Regra segura: o socket temporário de pareamento é sempre isolado. Credenciais gravadas. Status marcado `ready`. O `BotManager` carrega o novo bot na próxima varredura ou em um rebalanceamento.
 
 ---
 
@@ -412,9 +470,30 @@ Criar um `RUNBOOK.md` (ou seção no README) cobrindo:
 
 ---
 
+## 📌 Convenção de Divisão de Responsabilidades
+
+Por toda este documento, você verá seções marcadas com:
+
+- **`### Núcleo do Bot`** — Mudanças que você faz **NESTE REPOSITÓRIO** (`botWathsapp-baileys`)
+  - Pairing server (`src/pairing/server.ts`)
+  - BotManager para múltiplos sockets
+  - Features, handlers, tipos
+  - Banco de dados (migrations, queries)
+  - Testes
+
+- **`### [outro repositorio front end manipular] Frontend Web`** — Mudanças que você faz **EM OUTRO REPOSITÓRIO**
+  - Painel admin
+  - Interface de QR Code
+  - Autenticação do cliente
+  - Chamadas HTTP/WS para este servidor
+
+---
+
 ## Fase 5 — Multi-Bot / Multi-Tenant
 
 > **Objetivo:** Consolidar a camada multi-bot já prevista desde a modelagem inicial, permitindo que múltiplos bots (diferentes números de WhatsApp) coexistam no mesmo sistema, cada um com suas credenciais, usuários, grupos e logs isolados.
+
+---
 
 ### [outro repositorio front end manipular] Frontend Web
 
@@ -422,19 +501,36 @@ Criar um `RUNBOOK.md` (ou seção no README) cobrindo:
 
 Interface que lista todos os bots cadastrados com seu `bot_id`, status atual e data da última atualização das credenciais. Permite:
 
-- Iniciar o fluxo de pareamento para um bot específico.
-- Ver o status de conexão de cada bot em tempo real.
-- Desconectar/remover um bot.
+- **Provisionar novo bot:** Chamar `POST /bots` e receber URL de pareamento
+- **Iniciar pareamento:** Clicar em um bot e abrir fluxo de QR Code para aquele `bot_id`
+- **Monitorar status:** Ver em tempo real se cada bot está `inactive`, `pairing`, `ready`, `active` ou `disconnected`
+- **Gerenciar consumidores:** Ver quais usuários (consumers/whitelist) estão vinculados a cada bot
+- **Desconectar bot:** Marcar `is_active = false` ou trocar `status = 'disconnected'` para pausar sem deletar
 
 O painel deve usar autenticação robusta (não apenas um token simples) — OAuth, magic link, ou sistema de usuários completo.
+
+**Fluxo visual:**
+
+1. Admin abre o painel
+2. Vê lista de bots (ex: `cliente-a`, `cliente-b`, `financeiro-bot`)
+3. Clica em "Parear novo bot" → provisiona `bot_id` → recebe QR URL
+4. Navega para QR → escaneia → bot sobe automaticamente
+5. Admin volta ao painel → vê novo bot com `status = 'active'`
 
 ---
 
 #### 5.2 — Isolamento visual por `bot_id`
 
-O fluxo de pareamento (QR Code) deve ser parametrizado por `bot_id`. A URL pode ser `/pair/:botId` ou o `bot_id` pode ser selecionado no painel antes de abrir o WebSocket.
+O fluxo de pareamento (QR Code) deve ser parametrizado por `bot_id`. A URL é `/pair?bot_id=cliente-a` ou o `bot_id` pode ser selecionado no painel antes de abrir o WebSocket.
 
-O WebSocket e o servidor de pareamento devem garantir que as credenciais geradas para `bot_id: 'clienteA'` nunca sejam escritas no registro de `bot_id: 'clienteB'`.
+O WebSocket e o servidor de pareamento devem garantir que as credenciais geradas para `bot_id: 'cliente-a'` nunca sejam escritas no registro de `bot_id: 'cliente-b'`.
+
+**Diferenciação importante:**
+
+- Frontend seleciona `bot_id` **antes** do QR
+- Uma vez que o número é pareado com `bot_id: 'cliente-a'`, aquele número fica vinculado para sempre a `cliente-a`
+- Todos os consumidores (usuários em `users`) vão estar escopados por `bot_id`
+- Se um usuário quiser interagir com `cliente-b`, precisa estar em `users` com `bot_id = 'cliente-b'`
 
 ---
 
@@ -444,12 +540,14 @@ O WebSocket e o servidor de pareamento devem garantir que as credenciais geradas
 
 Todas as queries do sistema devem usar `bot_id` como filtro. Isso inclui `auth_store`, `users`, `user_commands` e `user_allowed_groups`. Garantir que:
 
-- O `BOT_ID` de cada instância do bot seja único e imutável.
-- A tabela `bots` seja a fonte oficial das instâncias válidas.
+- A tabela `bots` seja a fonte oficial das instâncias ativas (números que pareamos).
+- Cada bot tem `id` único no banco (ex: `bot-a`, `bot-b`, `financeiro-bot`).
 - A constraint `UNIQUE (bot_id, key_type, key_id)` esteja ativa na `auth_store`.
-- A unicidade `UNIQUE (bot_id, lid)` esteja ativa na `users`.
-- O `clearCorruptedAuthKeys` respeite o `bot_id` — nunca limpar chaves de outros bots.
-- Logs e grupos nunca vazem entre bots.
+- A unicidade `UNIQUE (bot_id, lid)` esteja ativa na `users` (consumidores são escopados por bot).
+- O `clearCorruptedAuthKeys(botId)` **nunca** limpa chaves de outros bots.
+- Logs (`user_commands`) e grupos (`user_allowed_groups`) nunca vazem entre bots.
+- Contexto de execução sempre carrega `botId` explicitamente (em [src/features/types.ts](src/features/types.ts#L18) `BotContext.botId`).
+- Features declaram `bots: "all" | string[]` indicando em quais bots estão habilitadas.
 
 ---
 
@@ -457,11 +555,24 @@ Todas as queries do sistema devem usar `bot_id` como filtro. Isso inclui `auth_s
 
 Criar um endpoint autenticado (ex: `POST /bots`) que:
 
-1. Recebe um `bot_id` e dados de configuração.
-2. Cria um registro inicial no banco.
+1. Recebe um `bot_id` e dados de configuração (nome, descrição, etc.).
+2. Cria um registro inicial na tabela `bots` com `status = 'inactive'`, `is_active = true`.
 3. Retorna a URL do fluxo de pareamento para aquele `bot_id`.
 
-O admin do painel pode chamar esse endpoint para adicionar um novo bot sem precisar alterar código ou configuração do servidor.
+O admin do painel pode chamar esse endpoint para adicionar um novo bot sem precisar alterar código.
+
+**Exemplo de response:**
+
+```json
+{
+  "ok": true,
+  "bot_id": "cliente-novo",
+  "status": "inactive",
+  "pair_ws_url": "ws://localhost:3000/pair/ws?bot_id=cliente-novo"
+}
+```
+
+Depois que o frontend fizer o pareamento via WebSocket, o status passa para `ready`, e o `BotManager` detecta e sobe o socket automaticamente.
 
 ---
 
@@ -469,11 +580,11 @@ O admin do painel pode chamar esse endpoint para adicionar um novo bot sem preci
 
 | Fase | Frontend | Núcleo do Bot |
 |---|---|---|
-| **1 — Fundação** | Nada | Tabela `auth_store`, `useSupabaseAuthState`, cache, migração, troca do `useMultiFileAuthState`, adaptação do `clearCorruptedAuth` |
-| **2 — Servidor de Pareamento** | Nada | Servidor HTTP/WS embutido, socket Baileys temporário, fluxo de status |
-| **3 — Frontend Web** | Interface de QR Code, autenticação, reconexão automática | Servir o HTML estático da interface |
+| **1 — Fundação** | Nada | Tabela `auth_store`, `useSupabaseAuthState`, cache, migração, `BotManager` multi-bot em `src/index.ts`, adaptação do `clearCorruptedAuth` |
+| **2 — Servidor de Pareamento** | Nada | Servidor HTTP/WS embutido, socket Baileys temporário, fluxo de status `pairing → ready → active` |
+| **3 — Frontend Web** | Interface de QR Code, autenticação, seleção de `bot_id` | Servir o HTML estático da interface |
 | **4 — Hardening** | WSS em produção, sem dados sensíveis no DOM | Criptografia opcional, monitoramento de saúde, fallback local, runbook |
-| **5 — Multi-Bot / Multi-Tenant** | Painel admin, isolamento por `bot_id`, provisionamento via UI | Garantir isolamento por `bot_id` em toda a base, tabela `bots`, endpoint de provisionamento |
+| **5 — Multi-Bot / Multi-Tenant** | Painel admin, UI para provisionar bots, listar consumers/whitelist | `BotManager` carrega todos os bots ativos do banco; isolamento `bot_id` em `auth_store`, `users`, `user_commands`, `user_allowed_groups`; endpoint `POST /bots`
 
 ---
 
