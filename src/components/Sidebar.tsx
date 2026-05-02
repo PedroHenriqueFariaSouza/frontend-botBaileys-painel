@@ -8,6 +8,7 @@ import {
   Box,
   Divider,
   Typography,
+  Switch,
 } from "@mui/material";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -17,6 +18,9 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import type { AppThemeMode } from "../theme";
 
 // Largura fixa do menu lateral em pixels — usada também em App.tsx para o offset do conteúdo
 const DRAWER_WIDTH = 260;
@@ -26,6 +30,8 @@ interface SidebarProps {
   onToggle: () => void;
   currentPage: string;
   onNavigate: (page: string) => void;
+  themeMode: AppThemeMode;
+  onToggleThemeMode: () => void;
 }
 
 // Itens de navegação — a propriedade `key` deve coincidir com os cases em App.renderPage()
@@ -41,7 +47,14 @@ const menuItems = [
 // Transição suave ao abrir/fechar o menu — sincronizada com o padding do conteúdo em App.tsx
 const TRANSITION = "width 300ms cubic-bezier(0.4, 0, 0.2, 1), margin 300ms cubic-bezier(0.4, 0, 0.2, 1)";
 
-export default function Sidebar({ open, onToggle, currentPage, onNavigate }: SidebarProps) {
+export default function Sidebar({
+  open,
+  onToggle,
+  currentPage,
+  onNavigate,
+  themeMode,
+  onToggleThemeMode,
+}: SidebarProps) {
   return (
     <>
       {/* Aba na borda esquerda para abrir o menu */}
@@ -120,6 +133,26 @@ export default function Sidebar({ open, onToggle, currentPage, onNavigate }: Sid
             </ListItemButton>
           ))}
         </List>
+
+        <Box sx={{ mt: "auto" }}>
+          <Divider sx={{ mb: 1 }} />
+          <List>
+            <ListItemButton onClick={onToggleThemeMode}>
+              <ListItemIcon>{themeMode === "dark" ? <DarkModeIcon /> : <LightModeIcon />}</ListItemIcon>
+              <ListItemText
+                primary={themeMode === "dark" ? "Modo Escuro" : "Modo Claro"}
+                secondary="Alternar tema"
+              />
+              <Switch
+                edge="end"
+                checked={themeMode === "dark"}
+                onClick={(event) => event.stopPropagation()}
+                onChange={(_event) => onToggleThemeMode()}
+                inputProps={{ "aria-label": "alternar modo escuro" }}
+              />
+            </ListItemButton>
+          </List>
+        </Box>
       </Drawer>
     </>
   );

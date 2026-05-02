@@ -10,8 +10,14 @@ import PairingPage from "./pages/PairingPage";
 import BotsPage from "./pages/BotsPage";
 import LoginPage from "./pages/LoginPage.tsx";
 import { supabase } from "./lib/supabase";
+import type { AppThemeMode } from "./theme";
 
-function App() {
+interface AppProps {
+  themeMode: AppThemeMode;
+  onToggleThemeMode: () => void;
+}
+
+function App({ themeMode, onToggleThemeMode }: AppProps) {
   const [session, setSession] = useState<Session | null>(null);
   // true enquanto a sessão ainda não foi verificada — evita piscar a tela de login
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -98,12 +104,14 @@ function App() {
   }
 
   return (
-    <Box sx={{ display: "flex" }}>
+    <Box sx={{ display: "flex", bgcolor: "background.default", color: "text.primary" }}>
       <Sidebar
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((prev) => !prev)}
         currentPage={page}
         onNavigate={handleNavigate}
+        themeMode={themeMode}
+        onToggleThemeMode={onToggleThemeMode}
       />
       <Box
         component="main"
@@ -112,6 +120,7 @@ function App() {
           p: 3,
           transition: "padding 300ms cubic-bezier(0.4, 0, 0.2, 1)",
           minHeight: "100vh",
+          bgcolor: "background.default",
         }}
       >
         <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
