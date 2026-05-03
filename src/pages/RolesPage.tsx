@@ -181,7 +181,7 @@ export default function RolesPage() {
   return (
     <Box>
       <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-        <Typography variant="h5">Papéis (Governança)</Typography>
+        <Typography variant="h5">Papéis</Typography>
         <Button
           variant="contained"
           startIcon={<AddIcon />}
