@@ -28,6 +28,9 @@ import {
   Select,
   Switch,
   Snackbar,
+  Checkbox,
+  FormGroup,
+  Divider,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import EditIcon from "@mui/icons-material/Edit";
@@ -35,7 +38,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import { supabase } from "../lib/supabase";
 import { formatUiErrorMessage } from "../lib/uiError.ts";
-import type { Bot, User } from "../types/database";
+import type { Bot, BotRole, User } from "../types/database";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -47,9 +50,14 @@ export default function UsersPage() {
   // bot_id selecionado no dropdown; string vazia = sem filtro (todos os bots)
   const [botFilter, setBotFilter] = useState("");
 
+  // Papéis disponíveis para o bot selecionado no dialog aberto
+  const [dialogRoles, setDialogRoles] = useState<BotRole[]>([]);
+  const [loadingRoles, setLoadingRoles] = useState(false);
+
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
+  const [editRoleIds, setEditRoleIds] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" }>({
     open: false,
@@ -62,7 +70,8 @@ export default function UsersPage() {
 
   // Add dialog state
   const [addOpen, setAddOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ lid: "", push_name: "", phone_jid: "", is_admin: false });
+  const [newUser, setNewUser] = useState({ lid: "", push_name: "", phone_jid: "", is_admin: false, bot_id: "" });
+  const [addRoleIds, setAddRoleIds] = useState<Set<number>>(new Set());
   const [addSaving, setAddSaving] = useState(false);
 
   async function fetchUsers() {
@@ -89,9 +98,39 @@ export default function UsersPage() {
     fetchUsers();
   }, []);
 
-  function handleEdit(user: User) {
+  async function fetchRolesForBot(selectedBotId: string) {
+    if (!selectedBotId) { setDialogRoles([]); return; }
+    setLoadingRoles(true);
+    const { data, error } = await supabase
+      .from("bot_roles")
+      .select("*")
+      .eq("bot_id", selectedBotId)
+      .order("name");
+    setLoadingRoles(false);
+    if (!error && data) setDialogRoles(data as BotRole[]);
+    else setDialogRoles([]);
+  }
+
+  async function fetchUserRoleIds(userId: number, botId: string): Promise<Set<number>> {
+    const { data, error } = await supabase
+      .from("user_roles")
+      .select("role_id")
+      .eq("user_id", userId)
+      .eq("bot_id", botId);
+    if (error || !data) return new Set();
+    return new Set((data as { role_id: number }[]).map((r) => r.role_id));
+  }
+
+  async function handleEdit(user: User) {
     setEditUser({ ...user });
+    setEditRoleIds(new Set());
     setEditOpen(true);
+    const botId = user.bot_id ?? "";
+    await fetchRolesForBot(botId);
+    if (user.id && botId) {
+      const ids = await fetchUserRoleIds(user.id, botId);
+      setEditRoleIds(ids);
+    }
   }
 
   async function handleSave() {
@@ -113,15 +152,28 @@ export default function UsersPage() {
       })
       .eq("lid", editUser.lid);
 
-    setSaving(false);
-
     if (error) {
+      setSaving(false);
       setSnackbar({ open: true, message: formatUiErrorMessage("salvar o usuário", error.message), severity: "error" });
-    } else {
-      setSnackbar({ open: true, message: "Usuário atualizado com sucesso!", severity: "success" });
-      setEditOpen(false);
-      fetchUsers();
+      return;
     }
+
+    // Sincroniza user_roles: remove todas e reinsere as selecionadas
+    if (editUser.id && editUser.bot_id) {
+      const userId = editUser.id;
+      const botId = editUser.bot_id;
+      await supabase.from("user_roles").delete().eq("user_id", userId).eq("bot_id", botId);
+      if (editRoleIds.size > 0) {
+        await supabase.from("user_roles").insert(
+          [...editRoleIds].map((roleId) => ({ bot_id: botId, user_id: userId, role_id: roleId }))
+        );
+      }
+    }
+
+    setSaving(false);
+    setSnackbar({ open: true, message: "Usuário atualizado com sucesso!", severity: "success" });
+    setEditOpen(false);
+    fetchUsers();
   }
 
   async function handleDelete() {
@@ -141,28 +193,43 @@ export default function UsersPage() {
     if (!newUser.lid.trim()) return;
     setAddSaving(true);
 
-    const { error } = await supabase.from("users").insert({
-      lid: newUser.lid.trim(),
-      push_name: newUser.push_name.trim() || null,
-      phone_jid: newUser.phone_jid.trim() || null,
-      is_admin: newUser.is_admin,
-      is_banned: false,
-      command_count: 0,
-      daily_command_count: 0,
-      first_seen_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-
-    setAddSaving(false);
+    const { data: inserted, error } = await supabase
+      .from("users")
+      .insert({
+        lid: newUser.lid.trim(),
+        push_name: newUser.push_name.trim() || null,
+        phone_jid: newUser.phone_jid.trim() || null,
+        is_admin: newUser.is_admin,
+        bot_id: newUser.bot_id || null,
+        is_banned: false,
+        command_count: 0,
+        daily_command_count: 0,
+        first_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
 
     if (error) {
+      setAddSaving(false);
       setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o usuário", error.message), severity: "error" });
-    } else {
-      setSnackbar({ open: true, message: "Usuário adicionado com sucesso!", severity: "success" });
-      setAddOpen(false);
-      setNewUser({ lid: "", push_name: "", phone_jid: "", is_admin: false });
-      fetchUsers();
+      return;
     }
+
+    // Salva papéis selecionados
+    if (inserted && newUser.bot_id && addRoleIds.size > 0) {
+      await supabase.from("user_roles").insert(
+        [...addRoleIds].map((roleId) => ({ bot_id: newUser.bot_id, user_id: inserted.id, role_id: roleId }))
+      );
+    }
+
+    setAddSaving(false);
+    setSnackbar({ open: true, message: "Usuário adicionado com sucesso!", severity: "success" });
+    setAddOpen(false);
+    setNewUser({ lid: "", push_name: "", phone_jid: "", is_admin: false, bot_id: "" });
+    setAddRoleIds(new Set());
+    setDialogRoles([]);
+    fetchUsers();
   }
 
   // Filtragem local: aplica primeiro o escopo de bot (se selecionado) e depois a busca por texto
@@ -385,6 +452,49 @@ export default function UsersPage() {
             fullWidth
             slotProps={{ inputLabel: { shrink: true } }}
           />
+          {/* Seção de papéis — exibida apenas quando o usuário tem bot_id */}
+          {editUser?.bot_id && (
+            <>
+              <Divider />
+              <Typography variant="subtitle2" color="text.secondary">
+                Papéis no bot {editUser.bot_id}
+              </Typography>
+              {loadingRoles ? (
+                <CircularProgress size={20} />
+              ) : dialogRoles.length === 0 ? (
+                <Typography variant="body2" color="text.disabled">
+                  Nenhum papel cadastrado para este bot.
+                </Typography>
+              ) : (
+                <FormGroup>
+                  {dialogRoles.map((role) => (
+                    <FormControlLabel
+                      key={role.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={editRoleIds.has(role.id)}
+                          onChange={(e) => {
+                            setEditRoleIds((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(role.id);
+                              else next.delete(role.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      }
+                      label={
+                        <Box component="span" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                          {role.name}
+                        </Box>
+                      }
+                    />
+                  ))}
+                </FormGroup>
+              )}
+            </>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditOpen(false)}>Cancelar</Button>
@@ -395,9 +505,28 @@ export default function UsersPage() {
       </Dialog>
 
       {/* Add user dialog */}
-      <Dialog open={addOpen} onClose={() => setAddOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={addOpen} onClose={() => { setAddOpen(false); setDialogRoles([]); setAddRoleIds(new Set()); }} maxWidth="sm" fullWidth>
         <DialogTitle>Adicionar Usuário</DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
+          {/* Seletor de bot obrigatório para escopar o usuário e carregar papéis */}
+          <FormControl size="small" fullWidth>
+            <InputLabel>Bot</InputLabel>
+            <Select
+              value={newUser.bot_id}
+              label="Bot"
+              onChange={(e) => {
+                const id = e.target.value;
+                setNewUser((prev) => ({ ...prev, bot_id: id }));
+                setAddRoleIds(new Set());
+                fetchRolesForBot(id);
+              }}
+            >
+              <MenuItem value=""><em>Selecione um bot (opcional)</em></MenuItem>
+              {bots.map((b) => (
+                <MenuItem key={b.id} value={b.id}>{b.id}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
             label="LID"
             value={newUser.lid}
@@ -431,9 +560,52 @@ export default function UsersPage() {
             }
             label="Administrador"
           />
+          {/* Seção de papéis — exibida apenas quando bot selecionado */}
+          {newUser.bot_id && (
+            <>
+              <Divider />
+              <Typography variant="subtitle2" color="text.secondary">
+                Papéis no bot {newUser.bot_id}
+              </Typography>
+              {loadingRoles ? (
+                <CircularProgress size={20} />
+              ) : dialogRoles.length === 0 ? (
+                <Typography variant="body2" color="text.disabled">
+                  Nenhum papel cadastrado para este bot.
+                </Typography>
+              ) : (
+                <FormGroup>
+                  {dialogRoles.map((role) => (
+                    <FormControlLabel
+                      key={role.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={addRoleIds.has(role.id)}
+                          onChange={(e) => {
+                            setAddRoleIds((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(role.id);
+                              else next.delete(role.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      }
+                      label={
+                        <Box component="span" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                          {role.name}
+                        </Box>
+                      }
+                    />
+                  ))}
+                </FormGroup>
+              )}
+            </>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setAddOpen(false)}>Cancelar</Button>
+          <Button onClick={() => { setAddOpen(false); setDialogRoles([]); setAddRoleIds(new Set()); }}>Cancelar</Button>
           <Button onClick={handleAdd} variant="contained" disabled={addSaving || !newUser.lid.trim()}>
             {addSaving ? "Salvando..." : "Adicionar"}
           </Button>

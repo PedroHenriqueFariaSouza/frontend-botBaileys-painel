@@ -18,6 +18,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import GroupsIcon from "@mui/icons-material/Groups";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
+import BadgeIcon from "@mui/icons-material/Badge";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import type { AppThemeMode } from "../theme";
@@ -42,6 +43,7 @@ const menuItems = [
   { key: "groups", label: "Grupos Permitidos", icon: <GroupsIcon /> },
   { key: "pairing", label: "Pareamento", icon: <QrCode2Icon /> },
   { key: "bots", label: "Gerenciar Bots", icon: <SmartToyIcon /> },
+  { key: "roles", label: "Papéis", icon: <BadgeIcon /> },
 ];
 
 // Transição suave ao abrir/fechar o menu — sincronizada com o padding do conteúdo em App.tsx

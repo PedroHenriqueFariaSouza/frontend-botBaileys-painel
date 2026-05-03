@@ -8,6 +8,7 @@ import CommandsPage from "./pages/CommandsPage";
 import GroupsPage from "./pages/GroupsPage";
 import PairingPage from "./pages/PairingPage";
 import BotsPage from "./pages/BotsPage";
+import RolesPage from "./pages/RolesPage";
 import LoginPage from "./pages/LoginPage.tsx";
 import { supabase } from "./lib/supabase";
 import type { AppThemeMode } from "./theme";
@@ -73,6 +74,8 @@ function App({ themeMode, onToggleThemeMode }: AppProps) {
         return <PairingPage botId={selectedBotId} />;
       case "bots":
         return <BotsPage onPairBot={handlePairBot} />;
+      case "roles":
+        return <RolesPage />;
       default:
         return <UsersPage />;
     }

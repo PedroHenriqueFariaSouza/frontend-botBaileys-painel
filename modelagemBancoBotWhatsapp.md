@@ -114,7 +114,6 @@ CREATE TABLE IF NOT EXISTS bot_roles (
   name VARCHAR(80) NOT NULL,
   slug VARCHAR(80) NOT NULL,
   description TEXT,
-  is_system BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   CONSTRAINT uq_bot_roles_bot_slug UNIQUE (bot_id, slug),
@@ -210,14 +209,7 @@ CREATE TRIGGER update_auth_store_modtime
   FOR EACH ROW
   EXECUTE FUNCTION update_modified_column();
 
--- 10. Seed inicial opcional para governanca hibrida
--- Mantem is_admin e cria um papel "admin" por bot para uso em user_roles.
-INSERT INTO bot_roles (bot_id, name, slug, description, is_system)
-SELECT b.id, 'Admin', 'admin', 'Papel administrativo com acesso total no bot', TRUE
-FROM bots b
-ON CONFLICT (bot_id, slug) DO NOTHING;
-
--- 11. RLS da tabela auth_store
+-- 10. RLS da tabela auth_store
 ALTER TABLE auth_store ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Service role full access" ON auth_store;
@@ -363,7 +355,6 @@ CREATE TABLE IF NOT EXISTS bot_roles (
   name VARCHAR(80) NOT NULL,
   slug VARCHAR(80) NOT NULL,
   description TEXT,
-  is_system BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   CONSTRAINT uq_bot_roles_bot_slug UNIQUE (bot_id, slug),
@@ -374,7 +365,6 @@ ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS bot_id TEXT;
 ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS name VARCHAR(80);
 ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS slug VARCHAR(80);
 ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS description TEXT;
-ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS is_system BOOLEAN;
 ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE;
 
@@ -391,10 +381,6 @@ SET slug = CONCAT('role-', id::TEXT)
 WHERE slug IS NULL;
 
 UPDATE bot_roles
-SET is_system = FALSE
-WHERE is_system IS NULL;
-
-UPDATE bot_roles
 SET created_at = NOW()
 WHERE created_at IS NULL;
 
@@ -405,8 +391,6 @@ WHERE updated_at IS NULL;
 ALTER TABLE bot_roles ALTER COLUMN bot_id SET NOT NULL;
 ALTER TABLE bot_roles ALTER COLUMN name SET NOT NULL;
 ALTER TABLE bot_roles ALTER COLUMN slug SET NOT NULL;
-ALTER TABLE bot_roles ALTER COLUMN is_system SET DEFAULT FALSE;
-ALTER TABLE bot_roles ALTER COLUMN is_system SET NOT NULL;
 ALTER TABLE bot_roles ALTER COLUMN created_at SET DEFAULT NOW();
 ALTER TABLE bot_roles ALTER COLUMN updated_at SET DEFAULT NOW();
 
@@ -512,21 +496,7 @@ BEGIN
   END IF;
 END $$;
 
--- 6. Seed do papel admin por bot (modelo hibrido: is_admin + papeis)
-INSERT INTO bot_roles (bot_id, name, slug, description, is_system)
-SELECT b.id, 'Admin', 'admin', 'Papel administrativo com acesso total no bot', TRUE
-FROM bots b
-ON CONFLICT (bot_id, slug) DO NOTHING;
-
--- 7. Backfill de user_roles para usuarios ja marcados como is_admin
-INSERT INTO user_roles (bot_id, user_id, role_id)
-SELECT u.bot_id, u.id, r.id
-FROM users u
-JOIN bot_roles r ON r.bot_id = u.bot_id AND r.slug = 'admin'
-WHERE COALESCE(u.is_admin, FALSE) = TRUE
-ON CONFLICT (bot_id, user_id, role_id) DO NOTHING;
-
--- 8. Expandir logs antigos
+-- 6. Expandir logs antigos
 ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS bot_id TEXT;
 ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS user_id BIGINT;
 
@@ -654,7 +624,16 @@ CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
 
 ### Observação importante sobre limpeza posterior
 
-Depois da migração estrutural, as colunas antigas baseadas em `lid` que ficaram em `user_commands` e `user_allowed_groups` podem ser removidas em uma segunda etapa, quando o código já estiver 100% usando `user_id`.
+O script de migração **não remove** a coluna `lid` de `user_commands` e `user_allowed_groups`. Isso é intencional: o script apenas adiciona o `user_id` e faz o backfill, mas mantém o `lid` original para não destruir dados nem quebrar código que ainda dependa dele.
+
+Quando o núcleo do bot e o frontend estiverem 100% operando com `user_id` nessas tabelas (e o `lid` nelas não for mais lido nem escrito por nenhum código), você pode executar a limpeza manualmente:
+
+```sql
+ALTER TABLE user_commands DROP COLUMN IF EXISTS lid;
+ALTER TABLE user_allowed_groups DROP COLUMN IF EXISTS lid;
+```
+
+Não rode isso antes de confirmar que nenhuma parte do sistema ainda usa `lid` como referência de usuário nessas duas tabelas.
 
 ---
 
@@ -791,7 +770,6 @@ Catálogo de papéis por instância de bot.
 | `name` | `VARCHAR(80)` | Nome amigável do papel |
 | `slug` | `VARCHAR(80)` | Identificador estável do papel no bot |
 | `description` | `TEXT` | Descrição opcional do papel |
-| `is_system` | `BOOLEAN` | Indica papel protegido do sistema (ex: `admin`) |
 | `created_at` | `TIMESTAMPTZ` | Data de criação |
 | `updated_at` | `TIMESTAMPTZ` | Última atualização |
 

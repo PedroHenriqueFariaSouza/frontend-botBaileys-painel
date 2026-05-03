@@ -58,3 +58,25 @@ export interface UserAllowedGroup {
   group_id: string;
   created_at: string;
 }
+
+/** Tabela `bot_roles` — catálogo de papéis (perfis) por bot */
+export interface BotRole {
+  id: number;
+  bot_id: string;
+  name: string;
+  slug: string;
+  description?: string | null;
+  /** Papel de sistema (admin) — não pode ser deletado pelo front-end */
+  is_system: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** Tabela `user_roles` — junção N:N usuário ↔ papel por bot */
+export interface UserRole {
+  id: number;
+  bot_id: string;
+  user_id: number;
+  role_id: number;
+  created_at: string | null;
+}

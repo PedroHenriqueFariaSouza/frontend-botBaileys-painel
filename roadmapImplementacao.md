@@ -726,7 +726,7 @@ ws.once("message", (raw) => {
 Criar as tabelas:
 
 - `bot_roles`: catálogo de papéis de cada bot
-  - `id`, `bot_id`, `name`, `slug`, `description`, `is_system`, `created_at`, `updated_at`
+  - `id`, `bot_id`, `name`, `slug`, `description`, `created_at`, `updated_at`
   - unicidade: `UNIQUE (bot_id, slug)`
 - `user_roles`: vínculo N:N entre usuário e papel
   - `id`, `bot_id`, `user_id`, `role_id`, `created_at`
@@ -751,11 +751,11 @@ Fluxo de autorização no runtime:
 
 Durante migração:
 
-1. Criar papel de sistema `admin` para cada bot (`bot_roles.slug = 'admin'`, `is_system = true`).
-2. Para cada usuário com `is_admin = true`, criar vínculo correspondente em `user_roles`.
+1. Criar as tabelas `bot_roles` e `user_roles` sem alterar a semântica atual de `users.is_admin`.
+2. Não criar papel especial de `admin`.
 3. Não remover `is_admin`.
 
-Resultado: backend antigo segue funcionando, enquanto novos fluxos passam a usar papéis.
+Resultado: backend antigo segue funcionando, enquanto novos fluxos passam a usar papéis adicionais sem misturar isso com administração.
 
 #### 6.4 — APIs/queries de governança
 
@@ -783,16 +783,15 @@ Registrar em log administrativo:
 
 ### [outro repositorio front end manipular] Frontend Web
 
-#### 6.6 — Nova tela de papéis por bot
+#### 6.6 — Nova tela de papéis por bot ✅ Concluído
 
 Criar página de governança para `bot_roles` com escopo explícito por bot:
 
 - seletor de bot
 - listagem de papéis daquele bot
 - ações de criar, editar e excluir
-- feedback visual para papéis de sistema (`is_system`)
 
-#### 6.7 — Ajustar criação/edição de usuário para papéis dinâmicos
+#### 6.7 — Ajustar criação/edição de usuário para papéis dinâmicos ✅ Concluído
 
 Na tela de usuários:
 
@@ -801,7 +800,7 @@ Na tela de usuários:
 - renderizar checkboxes dinâmicos para atribuição de papéis
 - ao salvar, persistir usuário + `user_roles`
 
-#### 6.8 — Regras de UX para o modelo híbrido
+#### 6.8 — Regras de UX para o modelo híbrido ✅ Concluído
 
 Exibir claramente no formulário:
 
@@ -811,7 +810,7 @@ Exibir claramente no formulário:
 
 Isso evita ambiguidade para o operador do painel.
 
-#### 6.9 — Isolamento visual e de dados
+#### 6.9 — Isolamento visual e de dados ✅ Concluído
 
 Toda busca e mutação de papéis/vínculos deve usar `bot_id`.
 
