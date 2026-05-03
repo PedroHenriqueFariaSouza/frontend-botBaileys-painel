@@ -33,10 +33,16 @@ import AddIcon from "@mui/icons-material/Add";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import { supabase } from "../lib/supabase";
 import { formatUiErrorMessage } from "../lib/uiError.ts";
-import type { Bot, UserAllowedGroup } from "../types/database";
+import type { Bot, User, UserAllowedGroup } from "../types/database";
+
+type GroupRow = UserAllowedGroup & {
+  resolved_lid?: string | null;
+  resolved_user_name?: string | null;
+};
 
 export default function GroupsPage() {
-  const [groups, setGroups] = useState<UserAllowedGroup[]>([]);
+  const [groups, setGroups] = useState<GroupRow[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   // Lista de bots usada para popular o dropdown de filtro
   const [bots, setBots] = useState<Bot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,12 +53,13 @@ export default function GroupsPage() {
 
   // Add dialog
   const [addOpen, setAddOpen] = useState(false);
-  const [newLid, setNewLid] = useState("");
+  const [newBotId, setNewBotId] = useState("");
+  const [newUserId, setNewUserId] = useState("");
   const [newGroupId, setNewGroupId] = useState("");
   const [addSaving, setAddSaving] = useState(false);
 
   // Delete dialog
-  const [deleteTarget, setDeleteTarget] = useState<UserAllowedGroup | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<GroupRow | null>(null);
 
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" }>({
     open: false,
@@ -63,16 +70,38 @@ export default function GroupsPage() {
   async function fetchGroups() {
     setLoading(true);
     // Busca grupos e bots em paralelo para não fazer duas roundtrips sequenciais
-    const [groupsRes, botsRes] = await Promise.all([
+    const [groupsRes, botsRes, usersRes] = await Promise.all([
       supabase.from("user_allowed_groups").select("*").order("created_at", { ascending: false }),
       // Só o campo id é necessário para popular o dropdown de filtro
       supabase.from("bots").select("id").order("id"),
+      supabase.from("users").select("id, bot_id, lid, push_name"),
     ]);
 
     if (groupsRes.error) {
       setError(formatUiErrorMessage("carregar os grupos permitidos", groupsRes.error.message));
     } else {
-      setGroups(groupsRes.data ?? []);
+      const usersByBotAndId = new Map<string, { lid: string; name: string | null }>();
+      if (!usersRes.error && usersRes.data) {
+        for (const user of usersRes.data as Array<{ id: number; bot_id: string; lid: string; push_name: string | null }>) {
+          usersByBotAndId.set(`${user.bot_id}:${user.id}`, { lid: user.lid, name: user.push_name ?? null });
+        }
+        setUsers(usersRes.data as User[]);
+      }
+
+      const mapped = ((groupsRes.data ?? []) as UserAllowedGroup[]).map((group) => ({
+        ...group,
+        resolved_lid: (
+          group.bot_id && group.user_id !== undefined
+            ? usersByBotAndId.get(`${group.bot_id}:${group.user_id}`)?.lid
+            : undefined
+        ) ?? group.lid ?? null,
+        resolved_user_name: (
+          group.bot_id && group.user_id !== undefined
+            ? usersByBotAndId.get(`${group.bot_id}:${group.user_id}`)?.name
+            : undefined
+        ) ?? null,
+      }));
+      setGroups(mapped);
     }
     if (!botsRes.error && botsRes.data) {
       setBots(botsRes.data as Bot[]);
@@ -84,23 +113,66 @@ export default function GroupsPage() {
     fetchGroups();
   }, []);
 
+  const usersForSelectedBot = users
+    .filter((u) => u.bot_id === newBotId && typeof u.id === "number")
+    .sort((a, b) => (a.push_name ?? a.lid).localeCompare(b.push_name ?? b.lid));
+
+  function getUserLabel(user: User) {
+    const name = user.push_name?.trim();
+    return name ? `${name} (${user.lid})` : `Sem nome (${user.lid})`;
+  }
+
   async function handleAdd() {
-    if (!newLid.trim() || !newGroupId.trim()) return;
+    if (!newBotId || !newUserId || !newGroupId.trim()) return;
     setAddSaving(true);
 
-    const { error } = await supabase.from("user_allowed_groups").insert({
-      lid: newLid.trim(),
-      group_id: newGroupId.trim(),
-    });
+    const selectedUser = usersForSelectedBot.find((u) => String(u.id) === newUserId);
+    if (!selectedUser?.id) {
+      setAddSaving(false);
+      setSnackbar({
+        open: true,
+        message: "Selecione um usuário válido do bot para vincular o grupo.",
+        severity: "error",
+      });
+      return;
+    }
+
+    const normalizedLid = selectedUser.lid;
+    const normalizedGroupId = newGroupId.trim();
+
+    let insertError: { message: string } | null = null;
+    const basePayload = {
+      bot_id: newBotId,
+      user_id: selectedUser.id,
+      group_id: normalizedGroupId,
+    };
+
+    const firstAttempt = await supabase.from("user_allowed_groups").insert(basePayload);
+    if (firstAttempt.error) {
+      const lower = firstAttempt.error.message.toLowerCase();
+      const needsLegacyLid =
+        lower.includes("null value in column \"lid\"") &&
+        lower.includes("not-null constraint");
+
+      if (needsLegacyLid) {
+        const secondAttempt = await supabase
+          .from("user_allowed_groups")
+          .insert({ ...basePayload, lid: normalizedLid });
+        insertError = secondAttempt.error;
+      } else {
+        insertError = firstAttempt.error;
+      }
+    }
 
     setAddSaving(false);
 
-    if (error) {
-      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o grupo permitido", error.message), severity: "error" });
+    if (insertError) {
+      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o grupo permitido", insertError.message), severity: "error" });
     } else {
       setSnackbar({ open: true, message: "Grupo adicionado com sucesso!", severity: "success" });
       setAddOpen(false);
-      setNewLid("");
+      setNewBotId("");
+      setNewUserId("");
       setNewGroupId("");
       fetchGroups();
     }
@@ -123,7 +195,7 @@ export default function GroupsPage() {
   const filtered = groups.filter(
     (g) =>
       (botFilter === "" || g.bot_id === botFilter) &&
-      (g.lid.includes(search) || g.group_id.includes(search))
+      ((g.resolved_lid ?? g.lid ?? "").includes(search) || g.group_id.includes(search))
   );
 
   if (loading) {
@@ -194,6 +266,7 @@ export default function GroupsPage() {
               <TableCell>Ações</TableCell>
               <TableCell>ID</TableCell>
               <TableCell>LID do Usuário</TableCell>
+              <TableCell>Nome do Usuário</TableCell>
               <TableCell>ID do Grupo</TableCell>
               <TableCell>Criado em</TableCell>
             </TableRow>
@@ -208,7 +281,10 @@ export default function GroupsPage() {
                 </TableCell>
                 <TableCell>{group.id}</TableCell>
                 <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>
-                  {group.lid}
+                  {group.resolved_lid ?? "—"}
+                </TableCell>
+                <TableCell>
+                  {group.resolved_user_name ?? "—"}
                 </TableCell>
                 <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>
                   {group.group_id}
@@ -220,7 +296,7 @@ export default function GroupsPage() {
             ))}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
                   Nenhum grupo encontrado.
                 </TableCell>
               </TableRow>
@@ -242,14 +318,43 @@ export default function GroupsPage() {
           </Tooltip>
         </DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
-          <TextField
-            label="LID do Usuário"
-            value={newLid}
-            onChange={(e) => setNewLid(e.target.value)}
-            size="small"
-            fullWidth
-            placeholder="Ex: 83339562246177"
-          />
+          <FormControl size="small" fullWidth required>
+            <InputLabel>Bot</InputLabel>
+            <Select
+              value={newBotId}
+              label="Bot"
+              onChange={(e) => {
+                setNewBotId(e.target.value);
+                setNewUserId("");
+              }}
+            >
+              <MenuItem value=""><em>Selecione um bot</em></MenuItem>
+              {bots.map((b) => (
+                <MenuItem key={b.id} value={b.id}>
+                  {b.id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth required disabled={!newBotId}>
+            <InputLabel>Usuário do Bot</InputLabel>
+            <Select
+              value={newUserId}
+              label="Usuário do Bot"
+              onChange={(e) => setNewUserId(e.target.value)}
+              renderValue={(selected) => {
+                const selectedUser = usersForSelectedBot.find((u) => String(u.id) === selected);
+                return selectedUser ? getUserLabel(selectedUser) : "";
+              }}
+            >
+              <MenuItem value=""><em>{newBotId ? "Selecione um usuário" : "Escolha um bot primeiro"}</em></MenuItem>
+              {usersForSelectedBot.map((u) => (
+                <MenuItem key={u.id} value={String(u.id)}>
+                  {getUserLabel(u)}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
             label="ID do Grupo"
             value={newGroupId}
@@ -261,7 +366,7 @@ export default function GroupsPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setAddOpen(false)}>Cancelar</Button>
-          <Button onClick={handleAdd} variant="contained" disabled={addSaving || !newLid.trim() || !newGroupId.trim()}>
+          <Button onClick={handleAdd} variant="contained" disabled={addSaving || !newBotId || !newUserId || !newGroupId.trim()}>
             {addSaving ? "Salvando..." : "Adicionar"}
           </Button>
         </DialogActions>
@@ -272,7 +377,7 @@ export default function GroupsPage() {
         <DialogTitle>Confirmar exclusão</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Remover o vínculo do LID <strong>{deleteTarget?.lid}</strong> com o grupo <strong>{deleteTarget?.group_id}</strong>?
+            Remover o vínculo do LID <strong>{deleteTarget?.resolved_lid ?? deleteTarget?.lid ?? "—"}</strong> com o grupo <strong>{deleteTarget?.group_id}</strong>?
           </DialogContentText>
         </DialogContent>
         <DialogActions>
