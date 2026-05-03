@@ -348,6 +348,28 @@ BEGIN
   END IF;
 END $$;
 
+-- 3.1 Migrar PRIMARY KEY antiga (users.lid) para users.id quando necessário
+DO $$
+DECLARE v_pk_name text;
+BEGIN
+  SELECT c.conname
+    INTO v_pk_name
+  FROM pg_constraint c
+  WHERE c.conrelid = 'public.users'::regclass
+    AND c.contype = 'p'
+    AND regexp_replace(lower(pg_get_constraintdef(c.oid)), '[\"\s]', '', 'g') LIKE 'primarykey(lid)%'
+  LIMIT 1;
+
+  IF v_pk_name IS NOT NULL THEN
+    -- Remove FKs legadas que ainda apontam para users(lid)
+    ALTER TABLE user_commands DROP CONSTRAINT IF EXISTS user_commands_lid_fkey;
+    ALTER TABLE user_allowed_groups DROP CONSTRAINT IF EXISTS user_allowed_groups_lid_fkey;
+
+    EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', v_pk_name);
+    ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+  END IF;
+END $$;
+
 -- 4. Criar/ajustar tabela bot_roles
 CREATE TABLE IF NOT EXISTS bot_roles (
   id BIGSERIAL PRIMARY KEY,
@@ -508,8 +530,8 @@ UPDATE user_commands uc
 SET user_id = u.id
 FROM users u
 WHERE uc.user_id IS NULL
-  AND uc.lid = u.lid
-  AND u.bot_id = 'default';
+  AND uc.bot_id = u.bot_id
+  AND uc.lid = u.lid;
 
 ALTER TABLE user_commands ALTER COLUMN bot_id SET NOT NULL;
 
@@ -526,6 +548,9 @@ END $$;
 
 DO $$
 BEGIN
+  -- Remove FK legada se ainda existir
+  ALTER TABLE user_commands DROP CONSTRAINT IF EXISTS user_commands_lid_fkey;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_commands_user'
   ) THEN
@@ -547,8 +572,8 @@ UPDATE user_allowed_groups ug
 SET user_id = u.id
 FROM users u
 WHERE ug.user_id IS NULL
-  AND ug.lid = u.lid
-  AND u.bot_id = 'default';
+  AND ug.bot_id = u.bot_id
+  AND ug.lid = u.lid;
 
 ALTER TABLE user_allowed_groups ALTER COLUMN bot_id SET NOT NULL;
 
@@ -565,6 +590,9 @@ END $$;
 
 DO $$
 BEGIN
+  -- Remove FK legada se ainda existir
+  ALTER TABLE user_allowed_groups DROP CONSTRAINT IF EXISTS user_allowed_groups_lid_fkey;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_allowed_groups_user'
   ) THEN

@@ -214,6 +214,10 @@ export default function UsersPage() {
 
   async function handleAdd() {
     if (!newUser.lid.trim()) return;
+    if (!newUser.bot_id) {
+      setSnackbar({ open: true, message: "Selecione um bot antes de adicionar o usuário.", severity: "error" });
+      return;
+    }
     setAddSaving(true);
 
     const { data: inserted, error } = await supabase
@@ -223,7 +227,7 @@ export default function UsersPage() {
         push_name: newUser.push_name.trim() || null,
         phone_jid: newUser.phone_jid.trim() || null,
         is_admin: newUser.is_admin,
-        bot_id: newUser.bot_id || null,
+        bot_id: newUser.bot_id,
         is_banned: false,
         command_count: 0,
         daily_command_count: 0,
@@ -235,7 +239,8 @@ export default function UsersPage() {
 
     if (error) {
       setAddSaving(false);
-      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o usuário", error.message), severity: "error" });
+      const addErrorMessage = [error.message, error.details, error.hint].filter(Boolean).join(" | ");
+      setSnackbar({ open: true, message: formatUiErrorMessage("adicionar o usuário", addErrorMessage), severity: "error" });
       return;
     }
 
@@ -532,7 +537,7 @@ export default function UsersPage() {
         <DialogTitle>Adicionar Usuário</DialogTitle>
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "16px !important" }}>
           {/* Seletor de bot obrigatório para escopar o usuário e carregar papéis */}
-          <FormControl size="small" fullWidth>
+          <FormControl size="small" fullWidth required>
             <InputLabel>Bot</InputLabel>
             <Select
               value={newUser.bot_id}
@@ -544,7 +549,7 @@ export default function UsersPage() {
                 fetchRolesForBot(id);
               }}
             >
-              <MenuItem value=""><em>Selecione um bot (opcional)</em></MenuItem>
+              <MenuItem value=""><em>Selecione um bot</em></MenuItem>
               {bots.map((b) => (
                 <MenuItem key={b.id} value={b.id}>{b.id}</MenuItem>
               ))}
@@ -629,7 +634,7 @@ export default function UsersPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => { setAddOpen(false); setDialogRoles([]); setAddRoleIds(new Set()); }}>Cancelar</Button>
-          <Button onClick={handleAdd} variant="contained" disabled={addSaving || !newUser.lid.trim()}>
+          <Button onClick={handleAdd} variant="contained" disabled={addSaving || !newUser.lid.trim() || !newUser.bot_id}>
             {addSaving ? "Salvando..." : "Adicionar"}
           </Button>
         </DialogActions>
