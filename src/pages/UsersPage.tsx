@@ -137,7 +137,7 @@ export default function UsersPage() {
     if (!editUser) return;
     setSaving(true);
 
-    const { error } = await supabase
+    let updateQuery = supabase
       .from("users")
       .update({
         push_name: editUser.push_name,
@@ -149,8 +149,19 @@ export default function UsersPage() {
         muted_until: editUser.muted_until || null,
         cooldown_until: editUser.cooldown_until || null,
         updated_at: new Date().toISOString(),
-      })
-      .eq("lid", editUser.lid);
+      });
+
+    // Prioriza o id (PK) para evitar update em múltiplos bots com o mesmo LID.
+    if (editUser.id) {
+      updateQuery = updateQuery.eq("id", editUser.id);
+    } else {
+      updateQuery = updateQuery.eq("lid", editUser.lid);
+      if (editUser.bot_id) {
+        updateQuery = updateQuery.eq("bot_id", editUser.bot_id);
+      }
+    }
+
+    const { error } = await updateQuery;
 
     if (error) {
       setSaving(false);
@@ -178,7 +189,19 @@ export default function UsersPage() {
 
   async function handleDelete() {
     if (!deleteTarget) return;
-    const { error } = await supabase.from("users").delete().eq("lid", deleteTarget.lid);
+    let deleteQuery = supabase.from("users").delete();
+
+    // Prioriza o id (PK) para evitar remover usuário homônimo (mesmo LID) de outro bot.
+    if (deleteTarget.id) {
+      deleteQuery = deleteQuery.eq("id", deleteTarget.id);
+    } else {
+      deleteQuery = deleteQuery.eq("lid", deleteTarget.lid);
+      if (deleteTarget.bot_id) {
+        deleteQuery = deleteQuery.eq("bot_id", deleteTarget.bot_id);
+      }
+    }
+
+    const { error } = await deleteQuery;
     setDeleteTarget(null);
 
     if (error) {
@@ -321,7 +344,7 @@ export default function UsersPage() {
           </TableHead>
           <TableBody>
             {filtered.map((user) => (
-              <TableRow key={user.lid} hover>
+              <TableRow key={user.id ?? `${user.bot_id ?? "sem-bot"}:${user.lid}`} hover>
                 <TableCell>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
                     <IconButton size="small" onClick={() => handleEdit(user)} title="Editar">
