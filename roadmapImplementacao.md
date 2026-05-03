@@ -697,3 +697,136 @@ ws.once("message", (raw) => {
 ```
 
 **Nenhuma rota HTTP nem a lógica de autenticação do token precisam mudar** — somente o handler do WebSocket `/pair/ws` é afetado.
+
+---
+
+## Fase 6 — Governança Híbrida por Bot (is_admin + Papéis)
+
+> **Objetivo:** Implementar uma camada de governança por papéis dinâmica e isolada por `bot_id`, mantendo o campo `is_admin` ativo e com o mesmo comportamento atual.
+
+### Regra funcional consolidada
+
+- `is_admin` **não será removido** e continua válido como permissão administrativa no bot.
+- Papéis passam a ser uma camada adicional de governança (`bot_roles` e `user_roles`).
+- Um usuário pode ser:
+  - somente admin (`is_admin = true`, sem papéis)
+  - somente com papéis (`is_admin = false`, com papéis vinculados)
+  - admin e com papéis ao mesmo tempo
+  - usuário comum (sem admin e sem papéis)
+- Ordem de autorização recomendada:
+  1. Se `is_admin = true`, concede acesso administrativo no bot.
+  2. Caso contrário, aplica regras com base nos papéis vinculados ao usuário naquele `bot_id`.
+
+---
+
+### Núcleo do Bot
+
+#### 6.1 — Expandir modelagem no Supabase para papéis por bot
+
+Criar as tabelas:
+
+- `bot_roles`: catálogo de papéis de cada bot
+  - `id`, `bot_id`, `name`, `slug`, `description`, `is_system`, `created_at`, `updated_at`
+  - unicidade: `UNIQUE (bot_id, slug)`
+- `user_roles`: vínculo N:N entre usuário e papel
+  - `id`, `bot_id`, `user_id`, `role_id`, `created_at`
+  - unicidade: `UNIQUE (bot_id, user_id, role_id)`
+
+Integridade obrigatória:
+
+- Vínculo sempre dentro do mesmo bot (`user_roles.bot_id` igual ao `bot_id` do usuário e do papel).
+- FKs com `ON DELETE CASCADE` para evitar registros órfãos.
+
+#### 6.2 — Manter compatibilidade total com `is_admin`
+
+Não alterar semântica de `is_admin` em `users`.
+
+Fluxo de autorização no runtime:
+
+1. Carrega usuário por `bot_id + lid`.
+2. Se `is_admin = true`, mantém acesso administrativo completo naquele bot.
+3. Em paralelo, papéis podem ser consultados para regras específicas (menus, comandos, auditoria).
+
+#### 6.3 — Migração de base existente sem downtime lógico
+
+Durante migração:
+
+1. Criar papel de sistema `admin` para cada bot (`bot_roles.slug = 'admin'`, `is_system = true`).
+2. Para cada usuário com `is_admin = true`, criar vínculo correspondente em `user_roles`.
+3. Não remover `is_admin`.
+
+Resultado: backend antigo segue funcionando, enquanto novos fluxos passam a usar papéis.
+
+#### 6.4 — APIs/queries de governança
+
+Adicionar/ajustar endpoints e consultas para:
+
+- listar, criar, editar e remover papéis por `bot_id`
+- listar papéis de um usuário por `bot_id`
+- salvar vínculos de papéis durante criação/edição de usuário
+
+Validações obrigatórias:
+
+- impedir `slug` duplicado no mesmo bot
+- impedir vínculo de usuário com papel de outro bot
+- impedir exclusão de papel em uso (ou exigir remoção dos vínculos antes)
+
+#### 6.5 — Observabilidade e auditoria mínima
+
+Registrar em log administrativo:
+
+- criação/edição/exclusão de papel
+- atribuição/remoção de papéis por usuário
+- ações cruzadas inválidas por `bot_id`
+
+---
+
+### [outro repositorio front end manipular] Frontend Web
+
+#### 6.6 — Nova tela de papéis por bot
+
+Criar página de governança para `bot_roles` com escopo explícito por bot:
+
+- seletor de bot
+- listagem de papéis daquele bot
+- ações de criar, editar e excluir
+- feedback visual para papéis de sistema (`is_system`)
+
+#### 6.7 — Ajustar criação/edição de usuário para papéis dinâmicos
+
+Na tela de usuários:
+
+- manter o controle atual de `is_admin` (switch/checkbox)
+- ao selecionar `bot_id`, consultar papéis desse bot
+- renderizar checkboxes dinâmicos para atribuição de papéis
+- ao salvar, persistir usuário + `user_roles`
+
+#### 6.8 — Regras de UX para o modelo híbrido
+
+Exibir claramente no formulário:
+
+- estado de admin (`is_admin`)
+- papéis atribuídos
+- resumo efetivo de acesso (admin, papéis ou ambos)
+
+Isso evita ambiguidade para o operador do painel.
+
+#### 6.9 — Isolamento visual e de dados
+
+Toda busca e mutação de papéis/vínculos deve usar `bot_id`.
+
+Garantir que:
+
+- papéis de `bot-a` nunca aparecem para usuários de `bot-b`
+- checkboxes são montados apenas com os papéis do bot selecionado
+- filtros seguem o padrão já adotado no painel para multi-bot
+
+---
+
+### Critério de aceite da Fase 6
+
+1. Campo `is_admin` continua ativo e sem regressão.
+2. Papéis podem ser gerenciados por bot no painel.
+3. Usuário pode ser salvo como admin, com papéis, com ambos ou sem ambos.
+4. Banco garante isolamento por `bot_id` em papéis e vínculos.
+5. Migração de base existente conclui sem perda de dados.

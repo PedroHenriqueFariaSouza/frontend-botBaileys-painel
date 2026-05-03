@@ -14,7 +14,7 @@ O banco é responsável por:
 - controle de bots/instâncias
 - armazenamento da sessão do WhatsApp (Baileys)
 - controle de usuários por bot
-- controle de permissões (admin/ban/mute)
+- controle de permissões híbrido (`is_admin` + papéis por bot)
 - controle de uso (logs e estatísticas)
 - restrição de uso por grupos
 
@@ -103,10 +103,39 @@ CREATE TABLE IF NOT EXISTS users (
   last_command_at TIMESTAMP WITH TIME ZONE,
   first_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  CONSTRAINT uq_users_bot_lid UNIQUE (bot_id, lid)
+  CONSTRAINT uq_users_bot_lid UNIQUE (bot_id, lid),
+  CONSTRAINT uq_users_id_bot UNIQUE (id, bot_id)
 );
 
--- 3. Tabela de logs de comandos por bot
+-- 3. Catalogo de papeis por bot
+CREATE TABLE IF NOT EXISTS bot_roles (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  name VARCHAR(80) NOT NULL,
+  slug VARCHAR(80) NOT NULL,
+  description TEXT,
+  is_system BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_bot_roles_bot_slug UNIQUE (bot_id, slug),
+  CONSTRAINT uq_bot_roles_id_bot UNIQUE (id, bot_id)
+);
+
+-- 4. Vinculo N:N usuario x papel por bot
+CREATE TABLE IF NOT EXISTS user_roles (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL,
+  role_id BIGINT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT fk_user_roles_user_bot FOREIGN KEY (user_id, bot_id)
+    REFERENCES users (id, bot_id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role_bot FOREIGN KEY (role_id, bot_id)
+    REFERENCES bot_roles (id, bot_id) ON DELETE CASCADE,
+  CONSTRAINT uq_user_roles UNIQUE (bot_id, user_id, role_id)
+);
+
+-- 5. Tabela de logs de comandos por bot
 CREATE TABLE IF NOT EXISTS user_commands (
   id BIGSERIAL PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -115,7 +144,7 @@ CREATE TABLE IF NOT EXISTS user_commands (
   used_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 4. Tabela de grupos permitidos por bot e usuario
+-- 6. Tabela de grupos permitidos por bot e usuario
 CREATE TABLE IF NOT EXISTS user_allowed_groups (
   id BIGSERIAL PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -125,7 +154,7 @@ CREATE TABLE IF NOT EXISTS user_allowed_groups (
   CONSTRAINT uq_user_allowed_groups UNIQUE (bot_id, user_id, group_id)
 );
 
--- 5. Tabela de autenticacao persistente do Baileys
+-- 7. Tabela de autenticacao persistente do Baileys
 CREATE TABLE IF NOT EXISTS auth_store (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -137,15 +166,18 @@ CREATE TABLE IF NOT EXISTS auth_store (
   CONSTRAINT uq_auth_store_key UNIQUE (bot_id, key_type, key_id)
 );
 
--- 6. Indices para performance
+-- 8. Indices para performance
 CREATE INDEX IF NOT EXISTS idx_users_bot_lid ON users(bot_id, lid);
+CREATE INDEX IF NOT EXISTS idx_bot_roles_bot_slug ON bot_roles(bot_id, slug);
+CREATE INDEX IF NOT EXISTS idx_user_roles_bot_user ON user_roles(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_bot_role ON user_roles(bot_id, role_id);
 CREATE INDEX IF NOT EXISTS idx_user_commands_bot_user ON user_commands(bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_user ON user_allowed_groups(bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_group ON user_allowed_groups(bot_id, group_id);
 CREATE INDEX IF NOT EXISTS idx_auth_store_bot ON auth_store(bot_id, key_type);
 CREATE INDEX IF NOT EXISTS idx_bots_status ON bots(status);
 
--- 7. Trigger generica para updated_at
+-- 9. Trigger generica para updated_at
 CREATE OR REPLACE FUNCTION update_modified_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -166,13 +198,26 @@ CREATE TRIGGER update_users_modtime
   FOR EACH ROW
   EXECUTE FUNCTION update_modified_column();
 
+DROP TRIGGER IF EXISTS update_bot_roles_modtime ON bot_roles;
+CREATE TRIGGER update_bot_roles_modtime
+  BEFORE UPDATE ON bot_roles
+  FOR EACH ROW
+  EXECUTE FUNCTION update_modified_column();
+
 DROP TRIGGER IF EXISTS update_auth_store_modtime ON auth_store;
 CREATE TRIGGER update_auth_store_modtime
   BEFORE UPDATE ON auth_store
   FOR EACH ROW
   EXECUTE FUNCTION update_modified_column();
 
--- 8. RLS da tabela auth_store
+-- 10. Seed inicial opcional para governanca hibrida
+-- Mantem is_admin e cria um papel "admin" por bot para uso em user_roles.
+INSERT INTO bot_roles (bot_id, name, slug, description, is_system)
+SELECT b.id, 'Admin', 'admin', 'Papel administrativo com acesso total no bot', TRUE
+FROM bots b
+ON CONFLICT (bot_id, slug) DO NOTHING;
+
+-- 11. RLS da tabela auth_store
 ALTER TABLE auth_store ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Service role full access" ON auth_store;
@@ -299,7 +344,189 @@ BEGIN
   END IF;
 END $$;
 
--- 4. Expandir logs antigos
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_users_id_bot'
+  ) THEN
+    ALTER TABLE users
+    ADD CONSTRAINT uq_users_id_bot UNIQUE (id, bot_id);
+  END IF;
+END $$;
+
+-- 4. Criar/ajustar tabela bot_roles
+CREATE TABLE IF NOT EXISTS bot_roles (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  name VARCHAR(80) NOT NULL,
+  slug VARCHAR(80) NOT NULL,
+  description TEXT,
+  is_system BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_bot_roles_bot_slug UNIQUE (bot_id, slug),
+  CONSTRAINT uq_bot_roles_id_bot UNIQUE (id, bot_id)
+);
+
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS bot_id TEXT;
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS name VARCHAR(80);
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS slug VARCHAR(80);
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS is_system BOOLEAN;
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE bot_roles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE;
+
+UPDATE bot_roles
+SET bot_id = 'default'
+WHERE bot_id IS NULL;
+
+UPDATE bot_roles
+SET name = CONCAT('Role ', id::TEXT)
+WHERE name IS NULL;
+
+UPDATE bot_roles
+SET slug = CONCAT('role-', id::TEXT)
+WHERE slug IS NULL;
+
+UPDATE bot_roles
+SET is_system = FALSE
+WHERE is_system IS NULL;
+
+UPDATE bot_roles
+SET created_at = NOW()
+WHERE created_at IS NULL;
+
+UPDATE bot_roles
+SET updated_at = NOW()
+WHERE updated_at IS NULL;
+
+ALTER TABLE bot_roles ALTER COLUMN bot_id SET NOT NULL;
+ALTER TABLE bot_roles ALTER COLUMN name SET NOT NULL;
+ALTER TABLE bot_roles ALTER COLUMN slug SET NOT NULL;
+ALTER TABLE bot_roles ALTER COLUMN is_system SET DEFAULT FALSE;
+ALTER TABLE bot_roles ALTER COLUMN is_system SET NOT NULL;
+ALTER TABLE bot_roles ALTER COLUMN created_at SET DEFAULT NOW();
+ALTER TABLE bot_roles ALTER COLUMN updated_at SET DEFAULT NOW();
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_bot_roles_bot'
+  ) THEN
+    ALTER TABLE bot_roles
+    ADD CONSTRAINT fk_bot_roles_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_bot_roles_bot_slug'
+  ) THEN
+    ALTER TABLE bot_roles
+    ADD CONSTRAINT uq_bot_roles_bot_slug UNIQUE (bot_id, slug);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_bot_roles_id_bot'
+  ) THEN
+    ALTER TABLE bot_roles
+    ADD CONSTRAINT uq_bot_roles_id_bot UNIQUE (id, bot_id);
+  END IF;
+END $$;
+
+-- 5. Criar/ajustar tabela user_roles
+CREATE TABLE IF NOT EXISTS user_roles (
+  id BIGSERIAL PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL,
+  role_id BIGINT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT fk_user_roles_user_bot FOREIGN KEY (user_id, bot_id)
+    REFERENCES users (id, bot_id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_roles_role_bot FOREIGN KEY (role_id, bot_id)
+    REFERENCES bot_roles (id, bot_id) ON DELETE CASCADE,
+  CONSTRAINT uq_user_roles UNIQUE (bot_id, user_id, role_id)
+);
+
+ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS bot_id TEXT;
+ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS user_id BIGINT;
+ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS role_id BIGINT;
+ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE;
+
+UPDATE user_roles
+SET created_at = NOW()
+WHERE created_at IS NULL;
+
+ALTER TABLE user_roles ALTER COLUMN bot_id SET NOT NULL;
+ALTER TABLE user_roles ALTER COLUMN user_id SET NOT NULL;
+ALTER TABLE user_roles ALTER COLUMN role_id SET NOT NULL;
+ALTER TABLE user_roles ALTER COLUMN created_at SET DEFAULT NOW();
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_roles_bot'
+  ) THEN
+    ALTER TABLE user_roles
+    ADD CONSTRAINT fk_user_roles_bot
+    FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_roles_user_bot'
+  ) THEN
+    ALTER TABLE user_roles
+    ADD CONSTRAINT fk_user_roles_user_bot
+    FOREIGN KEY (user_id, bot_id) REFERENCES users(id, bot_id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_user_roles_role_bot'
+  ) THEN
+    ALTER TABLE user_roles
+    ADD CONSTRAINT fk_user_roles_role_bot
+    FOREIGN KEY (role_id, bot_id) REFERENCES bot_roles(id, bot_id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'uq_user_roles'
+  ) THEN
+    ALTER TABLE user_roles
+    ADD CONSTRAINT uq_user_roles UNIQUE (bot_id, user_id, role_id);
+  END IF;
+END $$;
+
+-- 6. Seed do papel admin por bot (modelo hibrido: is_admin + papeis)
+INSERT INTO bot_roles (bot_id, name, slug, description, is_system)
+SELECT b.id, 'Admin', 'admin', 'Papel administrativo com acesso total no bot', TRUE
+FROM bots b
+ON CONFLICT (bot_id, slug) DO NOTHING;
+
+-- 7. Backfill de user_roles para usuarios ja marcados como is_admin
+INSERT INTO user_roles (bot_id, user_id, role_id)
+SELECT u.bot_id, u.id, r.id
+FROM users u
+JOIN bot_roles r ON r.bot_id = u.bot_id AND r.slug = 'admin'
+WHERE COALESCE(u.is_admin, FALSE) = TRUE
+ON CONFLICT (bot_id, user_id, role_id) DO NOTHING;
+
+-- 8. Expandir logs antigos
 ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS bot_id TEXT;
 ALTER TABLE user_commands ADD COLUMN IF NOT EXISTS user_id BIGINT;
 
@@ -338,7 +565,7 @@ BEGIN
   END IF;
 END $$;
 
--- 5. Expandir grupos antigos
+-- 9. Expandir grupos antigos
 ALTER TABLE user_allowed_groups ADD COLUMN IF NOT EXISTS bot_id TEXT;
 ALTER TABLE user_allowed_groups ADD COLUMN IF NOT EXISTS user_id BIGINT;
 
@@ -387,7 +614,7 @@ BEGIN
   END IF;
 END $$;
 
--- 6. Criar auth_store se ainda nao existir
+-- 10. Criar auth_store se ainda nao existir
 CREATE TABLE IF NOT EXISTS auth_store (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -399,7 +626,7 @@ CREATE TABLE IF NOT EXISTS auth_store (
   CONSTRAINT uq_auth_store_key UNIQUE (bot_id, key_type, key_id)
 );
 
--- 6.1. Garantir FK auth_store -> bots em bancos que ja tinham auth_store sem relacionamento
+-- 10.1. Garantir FK auth_store -> bots em bancos que ja tinham auth_store sem relacionamento
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -413,8 +640,11 @@ BEGIN
   END IF;
 END $$;
 
--- 7. Indices
+-- 11. Indices
 CREATE INDEX IF NOT EXISTS idx_users_bot_lid ON users(bot_id, lid);
+CREATE INDEX IF NOT EXISTS idx_bot_roles_bot_slug ON bot_roles(bot_id, slug);
+CREATE INDEX IF NOT EXISTS idx_user_roles_bot_user ON user_roles(bot_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_bot_role ON user_roles(bot_id, role_id);
 CREATE INDEX IF NOT EXISTS idx_user_commands_bot_user ON user_commands(bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_user ON user_allowed_groups(bot_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_allowed_groups_bot_group ON user_allowed_groups(bot_id, group_id);
@@ -547,6 +777,46 @@ Por isso a unicidade correta passa a ser:
 | `last_command_at` | `TIMESTAMPTZ` | Último comando |
 | `first_seen_at` | `TIMESTAMPTZ` | Primeira interação |
 | `updated_at` | `TIMESTAMPTZ` | Última atualização |
+
+---
+
+## 🧩 Tabela: `bot_roles`
+
+Catálogo de papéis por instância de bot.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGSERIAL` | Chave primária técnica |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `name` | `VARCHAR(80)` | Nome amigável do papel |
+| `slug` | `VARCHAR(80)` | Identificador estável do papel no bot |
+| `description` | `TEXT` | Descrição opcional do papel |
+| `is_system` | `BOOLEAN` | Indica papel protegido do sistema (ex: `admin`) |
+| `created_at` | `TIMESTAMPTZ` | Data de criação |
+| `updated_at` | `TIMESTAMPTZ` | Última atualização |
+
+Regra principal:
+
+- `UNIQUE (bot_id, slug)` para evitar papel duplicado dentro do mesmo bot.
+
+---
+
+## 🔗 Tabela: `user_roles`
+
+Vínculo N:N entre usuários e papéis, sempre escopado por `bot_id`.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | `BIGSERIAL` | Chave primária técnica |
+| `bot_id` | `TEXT` | FK para `bots(id)` |
+| `user_id` | `BIGINT` | Referência ao usuário do bot |
+| `role_id` | `BIGINT` | Referência ao papel do bot |
+| `created_at` | `TIMESTAMPTZ` | Data de atribuição |
+
+Regras principais:
+
+- `UNIQUE (bot_id, user_id, role_id)` evita vínculo duplicado.
+- FKs compostas garantem isolamento: usuário e papel devem pertencer ao mesmo bot.
 
 ---
 
